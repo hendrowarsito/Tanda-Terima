@@ -107,8 +107,10 @@ class SheetsStore:
         self.ws = {}
         for t, cols in COLS.items():
             w = have.get(t) or self.sh.add_worksheet(title=t, rows=1000, cols=len(cols))
-            if w.row_values(1) != cols:
-                w.update(values=[cols], range_name="A1")
+            # Pastikan header kolom sesuai
+            headers = w.row_values(1)
+            if headers != cols:
+                w.update(range_name="A1", values=[cols])
             self.ws[t] = w
 
     def read(self, t):
@@ -117,28 +119,39 @@ class SheetsStore:
         return pd.DataFrame(rows, columns=COLS[t])
 
     def _row(self, t, key):
-        return self.ws[t].col_values(1).index(str(key)) + 1
+        col_vals = [str(x) for x in self.ws[t].col_values(1)]
+        str_key = str(key)
+        if str_key in col_vals:
+            return col_vals.index(str_key) + 1
+        raise KeyError(f"Key {key} tidak ditemukan di tabel {t}")
 
     def insert(self, t, vals):
         cols = COLS[t]
         if cols[0] == "id":
             nums = [int(x) for x in self.ws[t].col_values(1)[1:] if str(x).isdigit()]
             vals = {**vals, "id": max(nums, default=0) + 1}
-        self.ws[t].append_row([clean(vals.get(c, "")) for c in cols], table_range="A1")
+        # Hapus parameter table_range="A1" agar append_row berjalan normal di semua versi gspread
+        row_data = [clean(vals.get(c, "")) for c in cols]
+        self.ws[t].append_row(row_data, value_input_option="USER_ENTERED")
         return vals.get("id")
 
     def update(self, t, key, vals):
         r = self._row(t, key)
-        self.ws[t].batch_update([{"range": self.gs.utils.rowcol_to_a1(r, COLS[t].index(k) + 1),
-                                  "values": [[clean(v)]]} for k, v in vals.items()])
+        updates = []
+        for k, v in vals.items():
+            col_idx = COLS[t].index(k) + 1
+            cell_range = self.gs.utils.rowcol_to_a1(r, col_idx)
+            updates.append({"range": cell_range, "values": [[clean(v)]]})
+        self.ws[t].batch_update(updates)
 
     def delete(self, t, key):
-        self.ws[t].delete_rows(self._row(t, key))
+        r = self._row(t, key)
+        self.ws[t].delete_rows(r)
 
     def replace(self, t, recs):
         self.ws[t].clear()
-        self.ws[t].update(values=[COLS[t]] + [[clean(r.get(c, "")) for c in COLS[t]] for r in recs],
-                          range_name="A1")
+        data = [COLS[t]] + [[clean(r.get(c, "")) for c in COLS[t]] for r in recs]
+        self.ws[t].update(range_name="A1", values=data)
 
 
 @st.cache_resource
