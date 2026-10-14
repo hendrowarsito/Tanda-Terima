@@ -1,5 +1,5 @@
 """Tanda Terima — prototipe pengganti OmniForm (Streamlit + Google Sheets / SQLite + ReportLab)."""
-import io, json, sqlite3
+import base64, io, json, sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -7,6 +7,10 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+try:
+    import pymupdf  # pratinjau PDF -> gambar
+except ImportError:
+    pymupdf = None
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
@@ -447,34 +451,129 @@ def _envelope(c, cl, up):
         c.drawString(x, T(y + 10), f"U.p. : {up}")
 
 
-def make_pdf(r, cl, kurir, kop, items):
+def make_pdf(r, cl, kurir, kop, items, mode="semua"):
+    """mode: 'tt' = tanda terima saja, 'amplop' = amplop saja, 'semua' = keduanya."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=PAGE)
-    pages = _paginate(_rows(items), (MAX_BOTTOM - TOP_T - HEAD_H) * mm)
-    for i, rows in enumerate(pages, 1):
-        used, pad = sum(h for _, h in rows) / mm, 0
-        while len(rows) + pad < 7 and used + (pad + 1) * ROW_H <= 7 * ROW_H + .2:
-            pad += 1
-        _form(c, r, cl, kurir, kop, rows, pad, i, len(pages))
-        c.showPage()
-    _envelope(c, cl, r["up"])  # halaman terakhir: amplop
+    if mode != "amplop":
+        pages = _paginate(_rows(items), (MAX_BOTTOM - TOP_T - HEAD_H) * mm)
+        for i, rows in enumerate(pages, 1):
+            used, pad = sum(h for _, h in rows) / mm, 0
+            while len(rows) + pad < 7 and used + (pad + 1) * ROW_H <= 7 * ROW_H + .2:
+                pad += 1
+            _form(c, r, cl, kurir, kop, rows, pad, i, len(pages))
+            c.showPage()
+    if mode != "tt":
+        _envelope(c, cl, r["up"])
     c.save()
     return buf.getvalue()
 
 
-def pdf_for(rid):
+def pdf_for(rid, mode="semua"):
     d = D("receipts")
     r = d[d.id == rid].iloc[0]
     cl = D("clients")
     cl = cl[cl.id == r.client_id].iloc[0]
     k = D("couriers")
     k = k[k.id == r.courier_id]
-    return make_pdf(r, cl, k.nama.iloc[0] if len(k) else "", get_kop(), json.loads(r["items"]))
+    return make_pdf(r, cl, k.nama.iloc[0] if len(k) else "", get_kop(), json.loads(r["items"]), mode)
+
+
+# ---------- Pratinjau & cetak ----------
+PRINT_HTML = """
+<style>
+ body{margin:0;font-family:"Source Sans Pro",system-ui,sans-serif}
+ button{padding:.45rem .9rem;margin-right:.4rem;border:1px solid #bbb;border-radius:.5rem;background:#fff;cursor:pointer;font-size:14px}
+ button.p{background:#ff4b4b;border-color:#ff4b4b;color:#fff}
+</style>
+<button class="p" id="p">🖨️ Cetak</button><button id="o">↗️ Buka di tab baru</button>
+<script>
+const bin=atob("__B64__"),arr=new Uint8Array(bin.length);
+for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+const url=URL.createObjectURL(new Blob([arr],{type:"application/pdf"}));
+document.getElementById("o").onclick=()=>window.open(url,"_blank");
+document.getElementById("p").onclick=()=>{
+  document.querySelectorAll("iframe").forEach(f=>f.remove());
+  const f=document.createElement("iframe");
+  f.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+  f.onload=()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){window.open(url,"_blank");}};
+  f.src=url;document.body.appendChild(f);
+};
+</script>"""
+
+
+def print_bar(pdf):
+    """Tombol cetak langsung (dialog cetak browser) + buka PDF di tab baru."""
+    html = PRINT_HTML.replace("__B64__", base64.b64encode(pdf).decode())
+    if hasattr(st, "iframe"):
+        st.iframe(html, height=46)
+    else:
+        import streamlit.components.v1 as comp
+        comp.html(html, height=46)
+
+
+@st.cache_data(show_spinner=False, max_entries=30)
+def render_pages(pdf, dpi=120):
+    if pymupdf is None:
+        return []
+    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+        return [p.get_pixmap(dpi=dpi).tobytes("png") for p in doc]
+
+
+def preview(pdf, mode):
+    imgs = render_pages(pdf)
+    if not imgs:
+        st.info("Pratinjau butuh paket `pymupdf` (lihat requirements.txt).")
+        return
+    forms = len(imgs) - (1 if mode == "semua" else 0)
+    labels = [] if mode == "amplop" else (["Tanda terima"] if forms == 1 else
+                                          [f"Tanda terima {i}/{forms}" for i in range(1, forms + 1)])
+    labels += ["Amplop"] if mode in ("amplop", "semua") else []
+    if len(imgs) == 1:
+        st.image(imgs[0], width=820)
+    else:
+        for tab, img in zip(st.tabs(labels), imgs):
+            tab.image(img, width=820)
+
+
+def show_receipt(rid, key):
+    opts = {"Tanda terima": "tt", "Amplop": "amplop", "Keduanya": "semua"}
+    pick = st.segmented_control("Yang dicetak / diunduh", list(opts), default="Tanda terima",
+                                key=f"mode_{key}") or "Tanda terima"
+    mode = opts[pick]
+    pdf = pdf_for(rid, mode)
+    d = D("receipts")
+    no = d.loc[d.id == rid, "nomor"].iloc[0]
+    a, b = st.columns([3, 2])
+    with a:
+        print_bar(pdf)
+    b.download_button("⬇️ Unduh PDF", pdf, f"{no}.pdf", "application/pdf", key=f"dl_{key}")
+    st.caption("Di dialog cetak: ukuran kertas **A5** (atau A4 dengan skala **100% / Actual size**, lalu potong "
+               "setengah), margin **None/Tanpa**. Jika dialog tidak muncul, pakai **Buka di tab baru** lalu Ctrl+P.")
+    preview(pdf, mode)
+
+
+def next_nomor(jenis, tahun):
+    d = D("receipts")
+    m = d[(d.jenis == jenis) & (d.tahun == tahun)].seq.max()
+    return f"{(int(m) + 1 if pd.notna(m) else 1):04d}-{jenis}"
 
 
 # ---------- Halaman ----------
 def page_buat():
     st.header("Buat tanda terima")
+    if "last" in st.session_state:
+        d = D("receipts")
+        m = d[d.id == st.session_state["last"]]
+        if m.empty:
+            st.session_state.pop("last")
+        else:
+            with st.container(border=True):
+                st.success(f"Tanda terima **{m.nomor.iloc[0]}** tersimpan. Siap dicetak:")
+                show_receipt(int(m.id.iloc[0]), "last")
+                if st.button("✖ Tutup & buat baru"):
+                    st.session_state.pop("last")
+                    st.rerun()
     cl = D("clients").sort_values("nama")
     cr = D("couriers")
     cr = cr[cr.aktif == 1]
@@ -501,8 +600,14 @@ def page_buat():
     items = st.data_editor(pd.DataFrame([{"Uraian": "", "Jumlah": "1 asli", "Keterangan": ""}]),
                            num_rows="dynamic", width="stretch", key=f"items{n}")
     catatan = st.text_input("Catatan (opsional)")
-    if st.button("💾 Simpan & buat PDF", type="primary"):
-        its = [r for r in items.fillna("").to_dict("records") if str(r["Uraian"]).strip()]
+    its = [r for r in items.fillna("").to_dict("records") if str(r["Uraian"]).strip()]
+
+    st.subheader("Pratinjau")
+    rprev = dict(nomor=next_nomor(jenis, tgl.year), tanggal=tgl.isoformat(), jam=jam.strftime("%H:%M"),
+                 up=up or "", catatan=catatan)
+    preview(make_pdf(rprev, row, cr.set_index("id").nama[kur], get_kop(), its, "tt"), "tt")
+    st.caption("Nomor final ditetapkan saat disimpan. Tombol cetak muncul setelah disimpan.")
+    if st.button("💾 Simpan", type="primary"):
         if not its:
             st.error("Isi minimal satu baris dokumen.")
         else:
@@ -513,12 +618,6 @@ def page_buat():
             st.session_state["last"] = rid
             st.session_state["n"] = n + 1
             st.rerun()
-    if "last" in st.session_state:
-        rid = st.session_state["last"]
-        d = D("receipts")
-        no = d.loc[d.id == rid, "nomor"].iloc[0]
-        st.success(f"Tanda terima **{no}** tersimpan.")
-        st.download_button("⬇️ Unduh PDF (tanda terima + amplop)", pdf_for(rid), f"{no}.pdf", "application/pdf")
 
 
 def page_riwayat():
@@ -547,16 +646,15 @@ def page_riwayat():
     lab = {r.id: f"{r.nomor} · {r.tanggal} · {r.klien}" for r in v.itertuples()}
     rid = st.selectbox("Pilih tanda terima", list(lab), format_func=lab.get)
     r = v[v.id == rid].iloc[0]
-    st.table(pd.DataFrame(json.loads(r["items"])))
-    a, b, c3 = st.columns(3)
+    a, b = st.columns(2)
     ns = a.selectbox("Status", STATUS, index=STATUS.index(r.status) if r.status in STATUS else 0)
     if a.button("Perbarui status"):
         W("update", "receipts", int(rid), {"status": ns})
         st.rerun()
-    b.download_button("⬇️ PDF", pdf_for(int(rid)), f"{r.nomor}.pdf", "application/pdf")
-    if c3.checkbox("Izinkan hapus") and c3.button("🗑️ Hapus"):
+    if b.checkbox("Izinkan hapus") and b.button("🗑️ Hapus"):
         W("delete", "receipts", int(rid))
         st.rerun()
+    show_receipt(int(rid), f"h{rid}")
 
 
 def page_dasbor():
