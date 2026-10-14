@@ -1,6 +1,7 @@
 """Tanda Terima — prototipe pengganti OmniForm (Streamlit + Google Sheets / SQLite + ReportLab)."""
 import io, json, sqlite3
 from datetime import datetime, timedelta
+from pathlib import Path
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
@@ -11,7 +12,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
-from reportlab.platypus import Paragraph, Table, TableStyle
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.platypus import Paragraph
 
 st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
 WIB = ZoneInfo("Asia/Jakarta")
@@ -21,7 +23,7 @@ BLN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus"
        "September", "Oktober", "November", "Desember"]
 KOP = {"nama": "SUWENDHO RINALDY & REKAN",
        "kiri": "KANTOR JASA PENILAI PUBLIK\nNomor Izin Usaha KJPP: 2.09.0059\nNomor Izin Cabang KJPP: 1138/KM.1/2017\nPenilai Properti dan Bisnis",
-       "kanan": "Kantor Cabang Jakarta\nKomplek Kalibata Indah Blok K16-17\nJl. Rawajati Timur, Pancoran\nJakarta Selatan 12750\nT (021) 7970913 / 799-4521"}
+       "kanan": "Kantor Cabang Jakarta\nKomplek Kalibata Indah Blok K16-17\nJl. Rawajati Timur, Pancoran\nJakarta Selatan 12750\nT (021) 7970913 / 799-4521\nE ocky@srr.co.id\nWilayah Kerja: Seluruh Indonesia\nKantor Cabang: Jakarta (P/B), Bandung (P)"}
 COLS = {"clients": ["id", "nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
         "couriers": ["id", "nama", "aktif"],
         "receipts": ["id", "jenis", "tahun", "seq", "nomor", "tanggal", "jam", "client_id", "up",
@@ -229,102 +231,233 @@ def load_receipts():
     return D("receipts").merge(c, on="client_id", how="left").merge(k, on="courier_id", how="left")
 
 
-# ---------- PDF ----------
+# ---------- PDF: setengah A4 (A5 landscape), meniru formulir OmniForm ----------
+PAGE = (210 * mm, 148.5 * mm)
+BLUE = colors.HexColor("#1b1b8a")
+NAVY = colors.HexColor("#301d6d")
+COLW = [9.9, 90.2, 20.1, 49.8]  # mm (total 170)
+LEFT, RIGHT = 20.2, 190.2
+TOP_T, HEAD_H, ROW_H, MAX_BOTTOM = 68.6, 5.3, 5.5, 119.0  # mm dari tepi atas
+LOGO_FILE = Path(globals().get("__file__", "app.py")).with_name("logo.png")  # opsional: logo asli
+_S_NAMA = 46.7 * mm / stringWidth(KOP["nama"], "Helvetica", 12.5) * 100
+_S_BODY = 50.5 * mm / stringWidth("Nomor Izin Cabang KJPP: 1138/KM.1/2017", "Helvetica", 9) * 100
+
+
+def _cond(c, txt, x, y, size, scale, maxw):
+    """Teks 'condensed' (diperlebar-sempit horizontal) seperti kop aslinya."""
+    sc = min(scale, maxw / max(stringWidth(txt, "Helvetica", size), 1) * 100)
+    t = c.beginText(x, y)
+    t.setFont("Helvetica", size)
+    t.setHorizScale(sc)
+    t.textOut(txt)
+    t.setHorizScale(100)  # kembalikan agar teks berikutnya normal
+    c.drawText(t)
+
+
+def _fit(c, txt, x, y, font, size, maxw, align="l"):
+    while size > 6 and stringWidth(txt, font, size) > maxw:
+        size -= 0.25
+    c.setFont(font, size)
+    {"l": c.drawString, "c": c.drawCentredString, "r": c.drawRightString}[align](x, y, txt)
+
+
+def _mix(c, parts, cx, y, size):
+    x = cx - sum(stringWidth(t, f, size) for t, f in parts) / 2
+    for t, f in parts:
+        c.setFont(f, size)
+        c.drawString(x, y, t)
+        x += stringWidth(t, f, size)
+
+
+def _label(c, x, y, a, b, size=10):
+    c.setFont("Helvetica", size)
+    c.drawString(x, y, a)
+    c.setFont("Helvetica-Oblique", size)
+    c.drawString(x, y - 4 * mm, b)
+
+
+def _addr_lines(cl, up):
+    """Maksimal 4 baris: nama + alamat (digabung bila kebanyakan) + U.p."""
+    addr = [cl[k] for k in ("alamat1", "alamat2", "alamat3", "alamat4") if cl[k]]
+    free = 3 - (1 if up else 0)
+    if len(addr) > free:
+        addr = addr[:free - 1] + [", ".join(addr[free - 1:])]
+    return [cl["nama"]] + addr + ([f"U.p. {up}"] if up else [])
+
+
+def _rows(items):
+    base = ParagraphStyle("p", fontName="Helvetica", fontSize=8, leading=9.4)
+    ctr = ParagraphStyle("pc", parent=base, alignment=1)
+    out = []
+    for n, it in enumerate(items, 1):
+        txt = [escape(str(it.get(k) or "")).replace("\n", "<br/>") for k in ("Uraian", "Jumlah", "Keterangan")]
+        cells = [Paragraph(f"{n}.", ctr), Paragraph(txt[0], base), Paragraph(txt[1], ctr), Paragraph(txt[2], base)]
+        for p, w in zip(cells, COLW):
+            p.wrap((w - 3) * mm, 1000)
+        out.append((cells, max(ROW_H * mm, max(p.height for p in cells) + 1.8 * mm)))
+    return out
+
+
+def _paginate(rows, limit):
+    pages, cur, used = [], [], 0
+    for rw in rows:
+        if cur and used + rw[1] > limit:
+            pages.append(cur)
+            cur, used = [], 0
+        cur.append(rw)
+        used += rw[1]
+    return pages + [cur]
+
+
+def _form(c, r, cl, kurir, kop, rows, pad, pi, np_):
+    H = PAGE[1]
+    T = lambda m: H - m * mm
+    X = lambda m: m * mm
+    # logo
+    lx, ly, ls = 16.2, 6.5, 22
+    if LOGO_FILE.exists():
+        c.drawImage(str(LOGO_FILE), X(lx), T(ly + ls), ls * mm, ls * mm, preserveAspectRatio=True, mask="auto")
+    else:
+        c.setFillColor(NAVY)
+        c.rect(X(lx), T(ly + ls), ls * mm, ls * mm, stroke=0, fill=1)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 22)
+        c.drawRightString(X(lx + .926 * ls), T(ly + .667 * ls), "SR")
+        c.setFont("Helvetica-Bold", 19.5)
+        c.drawRightString(X(lx + .937 * ls), T(ly + .958 * ls), "R")
+    # kop
+    c.setFillColor(BLUE)
+    _cond(c, kop["nama"], X(39), T(12.8), 12.5, _S_NAMA, 62 * mm)
+    y = 16.5
+    for ln in kop["kiri"].split("\n"):
+        _cond(c, ln, X(39), T(y), 9, _S_BODY, 52 * mm)
+        y += 3.4
+    y = 6.5
+    for n, ln in enumerate(kop["kanan"].split("\n")):
+        _fit(c, ln, X(91.6), T(y), "Helvetica-Bold" if n == 0 else "Helvetica", 7, 46.5 * mm)
+        y += 2.85
+    # nomor
+    c.setFillColor(colors.black)
+    c.setStrokeColor(colors.black)
+    c.setFont("Helvetica", 10)
+    c.drawString(X(160), T(14.2), "No.")
+    c.setFont("Helvetica-Oblique", 10)
+    c.drawString(X(160), T(18.4), "Number")
+    c.setLineWidth(.5)
+    c.line(X(166), T(15.2), X(185), T(15.2))
+    _fit(c, r["nomor"], X(175.5), T(14.4), "Helvetica", 11, 18.5 * mm, "c")
+    if np_ > 1:
+        c.setFont("Helvetica", 7.5)
+        c.drawString(X(160), T(22.6), f"Hal. {pi}/{np_}")
+    # garis tebal + kotak judul
+    c.setLineWidth(2)
+    c.line(X(19.5), T(31.9), X(190.3), T(31.9))
+    c.setFillColor(colors.white)
+    c.setLineWidth(1.3)
+    c.roundRect(X(139.2), T(37.8), 36.5 * mm, 11.5 * mm, 2 * mm, stroke=1, fill=1)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 11.5)
+    c.drawCentredString(X(157.45), T(31.1), "TANDA TERIMA")
+    cs = 2.6
+    fw = stringWidth("RECEIPT", "Helvetica-Oblique", 9) + cs * 6
+    t = c.beginText(X(157.45) - fw / 2, T(35.3))
+    t.setFont("Helvetica-Oblique", 9)
+    t.setCharSpace(cs)
+    t.textOut("RECEIPT")
+    t.setCharSpace(0)  # kembalikan jarak huruf
+    c.drawText(t)
+    # Kepada
+    c.setFont("Helvetica", 10)
+    c.drawString(X(LEFT), T(38.8), "Kepada:")
+    c.setLineWidth(.5)
+    c.line(X(LEFT), T(39.4), X(LEFT) + stringWidth("Kepada:", "Helvetica", 10), T(39.4))
+    c.setFont("Helvetica-Oblique", 10)
+    c.drawString(X(LEFT), T(42.9), "To")
+    lines = _addr_lines(cl, r["up"])
+    for i, ys in enumerate((39.9, 44.4, 49.2, 53.9)):
+        c.setStrokeColor(colors.HexColor("#555555"))
+        c.setLineWidth(.4)
+        c.line(X(34.2), T(ys), X(117.5), T(ys))
+        if i < len(lines):
+            _fit(c, lines[i], X(35), T(ys - .8), "Helvetica-Bold" if i == 0 else "Helvetica", 9.5, 81 * mm)
+    c.setStrokeColor(colors.black)
+    # Tgl & Jam
+    _label(c, X(131), T(45.4), "Tgl.", "Date")
+    c.setLineWidth(.4)
+    c.line(X(139.8), T(46.2), X(180.2), T(46.2))
+    _fit(c, idn(r["tanggal"]), X(141), T(45.5), "Helvetica", 9.5, 38 * mm)
+    _label(c, X(131.3), T(56.1), "Jam", "Hour")
+    c.line(X(140), T(56.8), X(160), T(56.8))
+    c.setFont("Helvetica", 9.5)
+    c.drawString(X(141), T(56.0), r["jam"])
+    _label(c, X(LEFT), T(61.9), "Telah diterima/diserahkan:", "Received/delivered:")
+    # tabel
+    x0 = [LEFT]
+    for w in COLW:
+        x0.append(x0[-1] + w)
+    bottom = TOP_T + HEAD_H + sum(h for _, h in rows) / mm + pad * ROW_H
+    c.setLineWidth(1.5)
+    c.rect(X(LEFT), T(bottom), (RIGHT - LEFT) * mm, (bottom - TOP_T) * mm)
+    for xv in x0[1:-1]:
+        c.line(X(xv), T(TOP_T), X(xv), T(bottom))
+    y = TOP_T + HEAD_H
+    c.line(X(LEFT), T(y), X(RIGHT), T(y))
+    O, I = "Helvetica", "Helvetica-Oblique"
+    for i, parts in enumerate([[("No.", O)], [("Uraian/", O), ("Description", I)],
+                               [("Jumlah/", O), ("Qty", I)], [("Keterangan/", O), ("Remarks", I)]]):
+        _mix(c, parts, X((x0[i] + x0[i + 1]) / 2), T(TOP_T + 3.9), 9)
+    for cells, h in rows:
+        for i, p in enumerate(cells):
+            p.drawOn(c, X(x0[i]) + 1.5 * mm, T(y) - (h - p.height) / 2 - p.height)
+        y += h / mm
+        c.line(X(LEFT), T(y), X(RIGHT), T(y))
+    for _ in range(pad):
+        y += ROW_H
+        c.line(X(LEFT), T(y), X(RIGHT), T(y))
+    # tanda tangan
+    sh = max(0, bottom - 112.5)
+    _label(c, X(LEFT), T(117.8 + sh), "Diterima oleh:", "Received by")
+    _label(c, X(138.6), T(117.8 + sh), "Diserahkan oleh:", "Delivered by")
+    c.setLineWidth(.6)
+    c.line(X(20), T(142.3), X(59), T(142.3))
+    c.line(X(138), T(142.3), X(167.7), T(142.3))
+    if kurir:
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(X(152.85), T(145.8), kurir)
+    if r["catatan"]:
+        _fit(c, f"Catatan: {r['catatan']}", X(63), T(141.3), "Helvetica-Oblique", 7.5, 72 * mm)
+
+
+def _envelope(c, cl, up):
+    T = lambda m: PAGE[1] - m * mm
+    x = 35 * mm
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 12)
+    c.drawString(x, T(50), "Kepada Yth.")
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(x, T(60), cl["nama"])
+    y = 60
+    c.setFont("Helvetica", 12)
+    for k in ("alamat1", "alamat2", "alamat3", "alamat4"):
+        if cl[k]:
+            y += 6.5
+            c.drawString(x, T(y), cl[k])
+    if up:
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(x, T(y + 10), f"U.p. : {up}")
+
+
 def make_pdf(r, cl, kurir, kop, items):
     buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    W, H = A4
-    M = 18 * mm
-    navy = colors.HexColor("#0b1f6b")
-    c.setFillColor(navy)
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(M, H - 16 * mm, kop["nama"])
-    c.setFont("Helvetica", 8)
-    y = H - 20.5 * mm
-    for ln in kop["kiri"].split("\n"):
-        c.drawString(M, y, ln)
-        y -= 3.8 * mm
-    y = H - 16 * mm
-    for n, ln in enumerate(kop["kanan"].split("\n")):
-        c.setFont("Helvetica-Bold" if n == 0 else "Helvetica", 8)
-        c.drawRightString(W - M, y, ln)
-        y -= 3.8 * mm
-    c.setStrokeColor(navy)
-    c.setLineWidth(1.2)
-    c.line(M, H - 42 * mm, W - M, H - 42 * mm)
-
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(W / 2, H - 53 * mm, "TANDA TERIMA")
-    c.setFont("Helvetica-Oblique", 9)
-    c.drawCentredString(W / 2, H - 58 * mm, "R E C E I P T")
-
-    top = H - 68 * mm
-    c.setFont("Helvetica", 8)
-    c.drawString(M, top, "Kepada / To")
-    c.setFont("Helvetica-Bold", 10)
-    y = top - 5 * mm
-    c.drawString(M, y, cl["nama"])
-    c.setFont("Helvetica", 9)
-    for k in ("alamat1", "alamat2", "alamat3", "alamat4"):
-        if cl[k]:
-            y -= 4.2 * mm
-            c.drawString(M, y, cl[k])
-    if r["up"]:
-        y -= 5 * mm
-        c.drawString(M, y, f"U.p. : {r['up']}")
-    x = W - M - 62 * mm
-    for i, (lab, val) in enumerate([("No. / Number", r["nomor"]), ("Tgl / Date", idn(r["tanggal"])),
-                                    ("Jam / Hour", r["jam"])]):
-        c.setFont("Helvetica", 8)
-        c.drawString(x, top - i * 5.5 * mm, lab)
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(x + 22 * mm, top - i * 5.5 * mm, f": {val}")
-
-    y = min(y, top - 20 * mm) - 9 * mm
-    c.setFont("Helvetica", 9)
-    c.drawString(M, y, "Telah diterima/diserahkan  (Received/delivered):")
-    P = ParagraphStyle("p", fontName="Helvetica", fontSize=9, leading=11)
-    B = ParagraphStyle("b", parent=P, fontName="Helvetica-Bold")
-    rows = [[Paragraph("No.", B), Paragraph("Uraian / Description", B), Paragraph("Jumlah / Qty", B),
-             Paragraph("Keterangan / Remarks", B)]]
-    for n, it in enumerate(items, 1):
-        rows.append([Paragraph(f"{n}.", P)] + [Paragraph(escape(str(it.get(k) or "")), P)
-                                               for k in ("Uraian", "Jumlah", "Keterangan")])
-    t = Table(rows, colWidths=[10 * mm, 78 * mm, 24 * mm, W - 2 * M - 112 * mm])
-    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                           ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8ebf5"))]))
-    _, th = t.wrapOn(c, W - 2 * M, H)
-    t.drawOn(c, M, y - 4 * mm - th)
-    y = y - 4 * mm - th - 12 * mm
-    if y < 65 * mm:
+    c = canvas.Canvas(buf, pagesize=PAGE)
+    pages = _paginate(_rows(items), (MAX_BOTTOM - TOP_T - HEAD_H) * mm)
+    for i, rows in enumerate(pages, 1):
+        used, pad = sum(h for _, h in rows) / mm, 0
+        while len(rows) + pad < 7 and used + (pad + 1) * ROW_H <= 7 * ROW_H + .2:
+            pad += 1
+        _form(c, r, cl, kurir, kop, rows, pad, i, len(pages))
         c.showPage()
-        y = H - 40 * mm
-    c.setFont("Helvetica", 9)
-    c.drawString(M, y, "Diterima oleh / Received by")
-    c.drawString(x, y, "Diserahkan oleh / Delivered by")
-    c.line(M, y - 24 * mm, M + 55 * mm, y - 24 * mm)
-    c.line(x, y - 24 * mm, x + 55 * mm, y - 24 * mm)
-    c.setFont("Helvetica", 8)
-    c.drawString(M, y - 28 * mm, "Tgl/Jam: ........................")
-    c.drawString(x, y - 28 * mm, kurir or "")
-    if r["catatan"]:
-        c.drawString(M, y - 40 * mm, f"Catatan: {r['catatan']}")
-
-    c.showPage()  # halaman 2: amplop
-    c.setFont("Helvetica", 12)
-    c.drawString(M + 20 * mm, H - 60 * mm, "Kepada Yth.")
-    c.setFont("Helvetica-Bold", 15)
-    y = H - 70 * mm
-    c.drawString(M + 20 * mm, y, cl["nama"])
-    c.setFont("Helvetica", 12)
-    for k in ("alamat1", "alamat2", "alamat3", "alamat4"):
-        if cl[k]:
-            y -= 6.5 * mm
-            c.drawString(M + 20 * mm, y, cl[k])
-    if r["up"]:
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(M + 20 * mm, y - 12 * mm, f"U.p. : {r['up']}")
+    _envelope(c, cl, r["up"])  # halaman terakhir: amplop
     c.save()
     return buf.getvalue()
 
