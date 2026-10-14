@@ -13,7 +13,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph, Table, TableStyle
 from sqlalchemy import (Column, Integer, MetaData, String, Table as T, Text,
-                        UniqueConstraint, create_engine, delete, func, insert, select, update)
+                        UniqueConstraint, create_engine, delete, func, insert, select, text, update)
 from sqlalchemy.exc import IntegrityError
 
 st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
@@ -41,7 +41,8 @@ def get_engine():
     for pre in ("postgres://", "postgresql://", "postgresql+psycopg2://"):  # pakai driver psycopg v3
         if url.startswith(pre):
             url = "postgresql+psycopg://" + url[len(pre):]
-    return create_engine(url, pool_pre_ping=True)
+    kw = {"connect_args": {"connect_timeout": 10}} if url.startswith("postgresql") else {}
+    return create_engine(url, pool_pre_ping=True, **kw)
 
 
 eng = get_engine()
@@ -59,6 +60,23 @@ receipts = T("receipts", md, Column("id", Integer, primary_key=True, autoincreme
              Column("status", String(20)), Column("catatan", Text), Column("items", Text),
              Column("created_at", String(25)), UniqueConstraint("jenis", "tahun", "seq"))
 settings = T("settings", md, Column("k", String(50), primary_key=True), Column("v", Text))
+try:
+    with eng.connect() as _c:
+        _c.execute(text("select 1"))
+except Exception as _e:  # tampilkan diagnosis (pesan asli Streamlit disembunyikan)
+    _u, _o = eng.url, getattr(_e, "orig", None) or _e
+    st.error("Tidak bisa terhubung ke database.")
+    st.code(f"host={_u.host}  port={_u.port}  user={_u.username}  db={_u.database}\n"
+            f"{type(_o).__name__}: {_o}")
+    st.markdown(
+        "**Cek berikut:**\n"
+        "1. **Supabase:** pakai URL *Connect → Session pooler* (host `aws-...pooler.supabase.com`, user "
+        "`postgres.<project-ref>`). URL *direct* (`db.<ref>.supabase.co`) hanya IPv6 dan gagal dari Streamlit Cloud.\n"
+        "2. Hapus tanda kurung siku `[ ]` di sekitar password pada URL contoh.\n"
+        "3. Password dengan karakter khusus harus di-encode (`@`→`%40`, `/`→`%2F`, `#`→`%23`, `:`→`%3A`).\n"
+        "4. **Neon:** tambahkan `?sslmode=require` di akhir URL.\n"
+        "5. Ingin mencoba dulu tanpa database tetap? Hapus baris `database_url` di Secrets (memakai SQLite sementara).")
+    st.stop()
 md.create_all(eng)
 
 
