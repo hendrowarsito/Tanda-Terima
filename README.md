@@ -35,6 +35,14 @@ Pada `private_key`, biarkan `\n` apa adanya (jangan diganti baris baru) dan teta
 Saat pertama dibuka, aplikasi membuat empat tab sendiri di Sheet: `clients`, `couriers`, `receipts`, `settings`.
 Jangan ubah nama tab atau urutan/judul kolom. Mengedit isi sel manual boleh, tapi kolom `id` jangan diubah.
 
+## Pratinjau & cetak
+- **Buat:** pratinjau tampil langsung di bawah formulir dan ikut berubah saat Anda mengisi. Nomor final baru
+  ditetapkan saat **Simpan**; setelah itu muncul blok cetak.
+- **Riwayat:** pilih tanda terima, lalu pratinjau dan tombol cetak muncul di bawahnya.
+- Pilih yang dicetak: **Tanda terima / Amplop / Keduanya**.
+- **🖨️ Cetak** membuka dialog cetak browser. Atur ukuran kertas **A5** (atau A4 dengan skala 100% / Actual size,
+  lalu potong setengah) dan margin None. Jika dialog tidak muncul (mis. Safari/HP), pakai **Buka di tab baru** lalu Ctrl+P.
+
 ## Batasan
 - Kuota Google API ±60 pembacaan/menit per pengguna; aplikasi men-cache data 20 detik, cukup untuk beberapa pengguna.
 - Bila banyak orang menyimpan bersamaan, nomor tetap dicek ulang agar tidak ganda, tapi untuk beban tinggi
