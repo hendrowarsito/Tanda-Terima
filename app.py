@@ -1,5 +1,5 @@
-"""Tanda Terima — prototipe pengganti OmniForm (Streamlit + SQLAlchemy + ReportLab)."""
-import io, json
+"""Tanda Terima — prototipe pengganti OmniForm (Streamlit + Google Sheets / SQLite + ReportLab)."""
+import io, json, sqlite3
 from datetime import datetime, timedelta
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
@@ -12,9 +12,6 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph, Table, TableStyle
-from sqlalchemy import (Column, Integer, MetaData, String, Table as T, Text,
-                        UniqueConstraint, create_engine, delete, func, insert, select, text, update)
-from sqlalchemy.exc import IntegrityError
 
 st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
 WIB = ZoneInfo("Asia/Jakarta")
@@ -25,6 +22,12 @@ BLN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus"
 KOP = {"nama": "SUWENDHO RINALDY & REKAN",
        "kiri": "KANTOR JASA PENILAI PUBLIK\nNomor Izin Usaha KJPP: 2.09.0059\nNomor Izin Cabang KJPP: 1138/KM.1/2017\nPenilai Properti dan Bisnis",
        "kanan": "Kantor Cabang Jakarta\nKomplek Kalibata Indah Blok K16-17\nJl. Rawajati Timur, Pancoran\nJakarta Selatan 12750\nT (021) 7970913 / 799-4521"}
+COLS = {"clients": ["id", "nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
+        "couriers": ["id", "nama", "aktif"],
+        "receipts": ["id", "jenis", "tahun", "seq", "nomor", "tanggal", "jam", "client_id", "up",
+                     "courier_id", "status", "catatan", "items", "created_at"],
+        "settings": ["k", "v"]}
+INTS = {"id", "tahun", "seq", "client_id", "courier_id", "aktif"}
 
 
 def secret(k, d=None):
@@ -34,66 +37,141 @@ def secret(k, d=None):
         return d
 
 
-# ---------- Database ----------
+# ---------- Penyimpanan: Google Sheets (utama) atau SQLite (cadangan) ----------
+def clean(v):
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return ""
+    if hasattr(v, "item"):
+        v = v.item()
+    return int(v) if isinstance(v, bool) else v
+
+
+def cast(d, t):
+    d = d.reindex(columns=COLS[t]).fillna("")
+    for c in COLS[t]:
+        if c in INTS:
+            d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0).astype(int)
+        else:
+            d[c] = d[c].astype(str)
+    return d.reset_index(drop=True)
+
+
+class SqliteStore:
+    def __init__(self, path):
+        self.c = sqlite3.connect(path, check_same_thread=False)
+        for t, cols in COLS.items():
+            defs = ", ".join('"id" INTEGER PRIMARY KEY AUTOINCREMENT' if c == "id" else
+                             '"k" TEXT PRIMARY KEY' if t == "settings" and c == "k" else f'"{c}"' for c in cols)
+            self.c.execute(f"CREATE TABLE IF NOT EXISTS {t} ({defs})")
+        self.c.commit()
+
+    def read(self, t):
+        return pd.read_sql(f"SELECT * FROM {t}", self.c)
+
+    def insert(self, t, vals):
+        ks = [k for k in COLS[t] if k in vals]
+        cur = self.c.execute(f"INSERT INTO {t} ({','.join(chr(34) + k + chr(34) for k in ks)}) "
+                             f"VALUES ({','.join('?' * len(ks))})", [clean(vals[k]) for k in ks])
+        self.c.commit()
+        return cur.lastrowid
+
+    def update(self, t, key, vals):
+        self.c.execute(f"UPDATE {t} SET {','.join(chr(34) + k + chr(34) + '=?' for k in vals)} "
+                       f'WHERE "{COLS[t][0]}"=?', [clean(v) for v in vals.values()] + [key])
+        self.c.commit()
+
+    def delete(self, t, key):
+        self.c.execute(f'DELETE FROM {t} WHERE "{COLS[t][0]}"=?', [key])
+        self.c.commit()
+
+    def replace(self, t, recs):
+        self.c.execute(f"DELETE FROM {t}")
+        for r in recs:
+            self.insert(t, r)
+
+
+class SheetsStore:
+    """Tiap tabel = satu worksheet; baris 1 = judul kolom. Kolom pertama = kunci (id / k)."""
+
+    def __init__(self, sid, info):
+        import gspread
+        self.gs = gspread
+        self.sh = gspread.service_account_from_dict(dict(info)).open_by_key(sid)
+        have = {w.title: w for w in self.sh.worksheets()}
+        self.ws = {}
+        for t, cols in COLS.items():
+            w = have.get(t) or self.sh.add_worksheet(title=t, rows=1000, cols=len(cols))
+            if w.row_values(1) != cols:
+                w.update(values=[cols], range_name="A1")
+            self.ws[t] = w
+
+    def read(self, t):
+        n = len(COLS[t])
+        rows = [(r + [""] * n)[:n] for r in self.ws[t].get_all_values()[1:] if r and r[0] != ""]
+        return pd.DataFrame(rows, columns=COLS[t])
+
+    def _row(self, t, key):
+        return self.ws[t].col_values(1).index(str(key)) + 1
+
+    def insert(self, t, vals):
+        cols = COLS[t]
+        if cols[0] == "id":
+            nums = [int(x) for x in self.ws[t].col_values(1)[1:] if str(x).isdigit()]
+            vals = {**vals, "id": max(nums, default=0) + 1}
+        self.ws[t].append_row([clean(vals.get(c, "")) for c in cols], table_range="A1")
+        return vals.get("id")
+
+    def update(self, t, key, vals):
+        r = self._row(t, key)
+        self.ws[t].batch_update([{"range": self.gs.utils.rowcol_to_a1(r, COLS[t].index(k) + 1),
+                                  "values": [[clean(v)]]} for k, v in vals.items()])
+
+    def delete(self, t, key):
+        self.ws[t].delete_rows(self._row(t, key))
+
+    def replace(self, t, recs):
+        self.ws[t].clear()
+        self.ws[t].update(values=[COLS[t]] + [[clean(r.get(c, "")) for c in COLS[t]] for r in recs],
+                          range_name="A1")
+
+
 @st.cache_resource
-def get_engine():
-    url = str(secret("database_url", "sqlite:///tandaterima.db")).strip()
-    for pre in ("postgres://", "postgresql://", "postgresql+psycopg2://"):  # pakai driver psycopg v3
-        if url.startswith(pre):
-            url = "postgresql+psycopg://" + url[len(pre):]
-    kw = {"connect_args": {"connect_timeout": 10}} if url.startswith("postgresql") else {}
-    return create_engine(url, pool_pre_ping=True, **kw)
+def get_store():
+    sid, info = secret("gsheet_id"), secret("gcp_service_account")
+    return SheetsStore(sid, info) if sid and info else SqliteStore("tandaterima.db")
 
 
-eng = get_engine()
-md = MetaData()
-clients = T("clients", md, Column("id", Integer, primary_key=True, autoincrement=True),
-            Column("nama", String(200)), Column("kode", String(20)), Column("alamat1", String(200)),
-            Column("alamat2", String(200)), Column("alamat3", String(200)), Column("alamat4", String(200)),
-            Column("kontak", Text))
-couriers = T("couriers", md, Column("id", Integer, primary_key=True, autoincrement=True),
-             Column("nama", String(100)), Column("aktif", Integer, default=1))
-receipts = T("receipts", md, Column("id", Integer, primary_key=True, autoincrement=True),
-             Column("jenis", String(5)), Column("tahun", Integer), Column("seq", Integer),
-             Column("nomor", String(30)), Column("tanggal", String(10)), Column("jam", String(5)),
-             Column("client_id", Integer), Column("up", String(200)), Column("courier_id", Integer),
-             Column("status", String(20)), Column("catatan", Text), Column("items", Text),
-             Column("created_at", String(25)), UniqueConstraint("jenis", "tahun", "seq"))
-settings = T("settings", md, Column("k", String(50), primary_key=True), Column("v", Text))
 try:
-    with eng.connect() as _c:
-        _c.execute(text("select 1"))
+    store = get_store()
 except Exception as _e:  # tampilkan diagnosis (pesan asli Streamlit disembunyikan)
-    _u, _o = eng.url, getattr(_e, "orig", None) or _e
-    st.error("Tidak bisa terhubung ke database.")
-    st.code(f"host={_u.host}  port={_u.port}  user={_u.username}  db={_u.database}\n"
-            f"{type(_o).__name__}: {_o}")
+    st.error("Tidak bisa terhubung ke Google Sheets.")
+    st.code(f"gsheet_id = {secret('gsheet_id')}\n"
+            f"service account = {(secret('gcp_service_account') or {}).get('client_email')}\n"
+            f"{type(_e).__name__}: {_e}")
     st.markdown(
         "**Cek berikut:**\n"
-        "1. **Supabase:** pakai URL *Connect → Session pooler* (host `aws-...pooler.supabase.com`, user "
-        "`postgres.<project-ref>`). URL *direct* (`db.<ref>.supabase.co`) hanya IPv6 dan gagal dari Streamlit Cloud.\n"
-        "2. Hapus tanda kurung siku `[ ]` di sekitar password pada URL contoh.\n"
-        "3. Password dengan karakter khusus harus di-encode (`@`→`%40`, `/`→`%2F`, `#`→`%23`, `:`→`%3A`).\n"
-        "4. **Neon:** tambahkan `?sslmode=require` di akhir URL.\n"
-        "5. Ingin mencoba dulu tanpa database tetap? Hapus baris `database_url` di Secrets (memakai SQLite sementara).")
+        "1. Bagikan (*Share*) Google Sheet ke email *service account* di atas dengan peran **Editor**.\n"
+        "2. Di Google Cloud, aktifkan **Google Sheets API** dan **Google Drive API** untuk project-nya.\n"
+        "3. `gsheet_id` = bagian URL antara `/d/` dan `/edit`.\n"
+        "4. `private_key` di Secrets harus utuh, diapit tanda kutip, dengan `\\n` tetap seperti di file JSON.\n"
+        "5. Mau mencoba dulu tanpa Sheets? Hapus `gsheet_id` dan `[gcp_service_account]` di Secrets (SQLite sementara).")
     st.stop()
-md.create_all(eng)
 
 
-def q(stmt):
-    with eng.connect() as c:
-        return pd.read_sql(stmt, c)
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached(t):
+    return cast(store.read(t), t)
 
 
-def run(stmt):
-    with eng.begin() as c:
-        c.execute(stmt)
+def D(t, fresh=False):
+    """Baca tabel (di-cache 20 detik agar tidak kena batas kuota Google API)."""
+    return cast(store.read(t), t) if fresh else _cached(t)
 
 
-def get_kop():
-    kop = dict(KOP)
-    kop.update({r.k: r.v for r in q(select(settings)).itertuples()})
-    return kop
+def W(op, t, *a):
+    r = getattr(store, op)(t, *a)
+    st.cache_data.clear()
+    return r
 
 
 def idn(iso):
@@ -101,54 +179,54 @@ def idn(iso):
     return f"{d.day} {BLN[d.month - 1]} {d.year}"
 
 
+def get_kop():
+    s = D("settings")
+    return {**KOP, **dict(zip(s.k, s.v))}
+
+
 def save_receipt(data):
-    for _ in range(3):  # ulangi bila bentrok nomor (dua pengguna bersamaan)
-        with eng.connect() as c:
-            m = c.execute(select(func.max(receipts.c.seq)).where(
-                receipts.c.jenis == data["jenis"], receipts.c.tahun == data["tahun"])).scalar()
-        seq = (m or 0) + 1
-        try:
-            with eng.begin() as c:
-                r = c.execute(insert(receipts).values(**data, seq=seq, nomor=f"{seq:04d}-{data['jenis']}"))
-                return r.inserted_primary_key[0]
-        except IntegrityError:
-            continue
+    for _ in range(4):  # cek ulang setelah menulis: jika nomor bentrok dengan pengguna lain, ulangi
+        d = D("receipts", True)
+        m = d[(d.jenis == data["jenis"]) & (d.tahun == data["tahun"])].seq.max()
+        seq = int(m) + 1 if pd.notna(m) else 1
+        rid = W("insert", "receipts", {**data, "seq": seq, "nomor": f"{seq:04d}-{data['jenis']}"})
+        d = D("receipts", True)
+        dup = d[(d.jenis == data["jenis"]) & (d.tahun == data["tahun"]) & (d.seq == seq)]
+        if len(dup) == 1 or dup.id.min() == rid:
+            return rid
+        W("delete", "receipts", rid)
     raise RuntimeError("Gagal membuat nomor unik, coba lagi.")
 
 
-def sync(tbl, df, cols, ref_col, label):
-    """Simpan hasil st.data_editor: tambah / ubah / hapus (hapus diblokir bila sudah dipakai)."""
-    old = q(select(tbl.c.id))["id"].tolist()
+def sync(t, df, cols, ref_col, label):
+    """Simpan hasil st.data_editor: tambah / ubah (hanya yang berubah) / hapus (diblokir bila sudah dipakai)."""
+    cur = D(t, True).set_index("id")
+    used = set(D("receipts", True)[ref_col])
     keep = set()
-    with eng.begin() as c:
-        for _, r in df.iterrows():
-            vals = {}
-            for k in cols:
-                v = r[k]
-                v = None if pd.isna(v) else (v.item() if hasattr(v, "item") else v)
-                vals[k] = int(v) if isinstance(v, bool) else v
-            if not str(vals[cols[0]] or "").strip():
-                continue
-            if pd.isna(r["id"]):
-                c.execute(insert(tbl).values(**vals))
-            else:
-                c.execute(update(tbl).where(tbl.c.id == int(r["id"])).values(**vals))
-                keep.add(int(r["id"]))
-        for i in old:
-            if i in keep:
-                continue
-            used = c.execute(select(func.count()).select_from(receipts).where(ref_col == i)).scalar()
-            if used:
-                st.warning(f"{label} id {i} sudah dipakai di tanda terima, tidak dihapus (nonaktifkan saja).")
-            else:
-                c.execute(delete(tbl).where(tbl.c.id == i))
+    for _, r in df.iterrows():
+        vals = {k: clean(r[k]) for k in cols}
+        if not str(vals[cols[0]]).strip():
+            continue
+        if pd.isna(r["id"]):
+            W("insert", t, vals)
+            continue
+        i = int(r["id"])
+        keep.add(i)
+        if i in cur.index and any(str(cur.at[i, k]) != str(vals[k]) for k in cols):
+            W("update", t, i, vals)
+    for i in cur.index:
+        if i in keep:
+            continue
+        if i in used:
+            st.warning(f"{label} id {i} sudah dipakai di tanda terima, tidak dihapus (nonaktifkan saja).")
+        else:
+            W("delete", t, int(i))
 
 
 def load_receipts():
-    r = q(select(receipts))
-    c = q(select(clients.c.id.label("client_id"), clients.c.nama.label("klien")))
-    k = q(select(couriers.c.id.label("courier_id"), couriers.c.nama.label("pengantar")))
-    return r.merge(c, on="client_id", how="left").merge(k, on="courier_id", how="left")
+    c = D("clients")[["id", "nama"]].rename(columns={"id": "client_id", "nama": "klien"})
+    k = D("couriers")[["id", "nama"]].rename(columns={"id": "courier_id", "nama": "pengantar"})
+    return D("receipts").merge(c, on="client_id", how="left").merge(k, on="courier_id", how="left")
 
 
 # ---------- PDF ----------
@@ -252,17 +330,21 @@ def make_pdf(r, cl, kurir, kop, items):
 
 
 def pdf_for(rid):
-    r = q(select(receipts).where(receipts.c.id == rid)).iloc[0]
-    cl = q(select(clients).where(clients.c.id == int(r.client_id))).iloc[0].fillna("")
-    k = q(select(couriers.c.nama).where(couriers.c.id == int(r.courier_id)))
-    return make_pdf(r.fillna(""), cl, k.iloc[0, 0] if len(k) else "", get_kop(), json.loads(r["items"]))
+    d = D("receipts")
+    r = d[d.id == rid].iloc[0]
+    cl = D("clients")
+    cl = cl[cl.id == r.client_id].iloc[0]
+    k = D("couriers")
+    k = k[k.id == r.courier_id]
+    return make_pdf(r, cl, k.nama.iloc[0] if len(k) else "", get_kop(), json.loads(r["items"]))
 
 
 # ---------- Halaman ----------
 def page_buat():
     st.header("Buat tanda terima")
-    cl = q(select(clients).order_by(clients.c.nama))
-    cr = q(select(couriers).where(couriers.c.aktif == 1))
+    cl = D("clients").sort_values("nama")
+    cr = D("couriers")
+    cr = cr[cr.aktif == 1]
     if cl.empty or cr.empty:
         st.info("Isi dulu menu **Klien & Pengantar** (atau pakai data contoh di **Pengaturan**).")
         return
@@ -279,7 +361,7 @@ def page_buat():
     cid = st.selectbox("Kepada", cl.id.tolist(), format_func=lambda i: nm[i])
     row = cl[cl.id == cid].iloc[0]
     st.caption(" · ".join(x for x in [row.alamat1, row.alamat2, row.alamat3, row.alamat4] if x))
-    kontak = [x.strip() for x in (row.kontak or "").split("\n") if x.strip()]
+    kontak = [x.strip() for x in row.kontak.split("\n") if x.strip()]
     up = st.selectbox("U.p. (pilih atau ketik baru)", kontak, index=0 if kontak else None,
                       accept_new_options=True)
     st.write("**Daftar dokumen**")
@@ -300,7 +382,8 @@ def page_buat():
             st.rerun()
     if "last" in st.session_state:
         rid = st.session_state["last"]
-        no = q(select(receipts.c.nomor).where(receipts.c.id == rid)).iloc[0, 0]
+        d = D("receipts")
+        no = d.loc[d.id == rid, "nomor"].iloc[0]
         st.success(f"Tanda terima **{no}** tersimpan.")
         st.download_button("⬇️ Unduh PDF (tanda terima + amplop)", pdf_for(rid), f"{no}.pdf", "application/pdf")
 
@@ -317,7 +400,7 @@ def page_riwayat():
     sf = c3.multiselect("Status", STATUS)
     v = df.sort_values(["tahun", "seq"], ascending=False)
     if s:
-        hay = (v.klien.fillna("") + v.nomor + v["items"].fillna("")).str.lower()
+        hay = (v.klien.fillna("") + v.nomor + v["items"]).str.lower()
         v = v[hay.str.contains(s.lower(), regex=False)]
     if jf:
         v = v[v.jenis.isin(jf)]
@@ -333,13 +416,13 @@ def page_riwayat():
     r = v[v.id == rid].iloc[0]
     st.table(pd.DataFrame(json.loads(r["items"])))
     a, b, c3 = st.columns(3)
-    ns = a.selectbox("Status", STATUS, index=STATUS.index(r.status))
+    ns = a.selectbox("Status", STATUS, index=STATUS.index(r.status) if r.status in STATUS else 0)
     if a.button("Perbarui status"):
-        run(update(receipts).where(receipts.c.id == int(rid)).values(status=ns))
+        W("update", "receipts", int(rid), {"status": ns})
         st.rerun()
     b.download_button("⬇️ PDF", pdf_for(int(rid)), f"{r.nomor}.pdf", "application/pdf")
     if c3.checkbox("Izinkan hapus") and c3.button("🗑️ Hapus"):
-        run(delete(receipts).where(receipts.c.id == int(rid)))
+        W("delete", "receipts", int(rid))
         st.rerun()
 
 
@@ -370,58 +453,58 @@ def page_master():
     st.header("Klien & Pengantar")
     st.subheader("Klien")
     st.caption("Kolom *kontak*: satu nama (U.p.) per baris. Hapus baris dengan memilihnya lalu tekan Delete.")
-    cdf = q(select(clients).order_by(clients.c.nama))
-    ed = st.data_editor(cdf, num_rows="dynamic", width="stretch", hide_index=True, key="ce",
-                        disabled=["id"], column_config={"kontak": st.column_config.TextColumn(width="large")})
+    ed = st.data_editor(D("clients").sort_values("nama"), num_rows="dynamic", width="stretch", hide_index=True,
+                        key="ce", disabled=["id"],
+                        column_config={"kontak": st.column_config.TextColumn(width="large")})
     if st.button("Simpan klien"):
-        sync(clients, ed, ["nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
-             receipts.c.client_id, "Klien")
+        sync("clients", ed, ["nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
+             "client_id", "Klien")
         st.rerun()
     st.subheader("Pengantar")
-    kdf = q(select(couriers).order_by(couriers.c.nama))
+    kdf = D("couriers").sort_values("nama")
     kdf["aktif"] = kdf["aktif"].astype(bool)
     ek = st.data_editor(kdf, num_rows="dynamic", width="stretch", hide_index=True, key="ke",
                         disabled=["id"], column_config={"aktif": st.column_config.CheckboxColumn()})
     if st.button("Simpan pengantar"):
-        sync(couriers, ek.fillna({"aktif": True}), ["nama", "aktif"], receipts.c.courier_id, "Pengantar")
+        sync("couriers", ek.fillna({"aktif": True}), ["nama", "aktif"], "courier_id", "Pengantar")
         st.rerun()
 
 
 def page_setelan():
     st.header("Pengaturan")
+    if isinstance(store, SheetsStore):
+        st.success("Penyimpanan: **Google Sheets** (data tetap).")
+        st.link_button("Buka Google Sheet", store.sh.url)
+    else:
+        st.warning("Penyimpanan: **SQLite sementara** — data hilang saat aplikasi restart di Streamlit Cloud. "
+                   "Isi `gsheet_id` dan `[gcp_service_account]` di Secrets untuk memakai Google Sheets.")
     st.subheader("Kop surat")
     kop = get_kop()
     nama = st.text_input("Nama KJPP", kop["nama"])
     kiri = st.text_area("Blok kiri (di bawah nama)", kop["kiri"], height=110)
     kanan = st.text_area("Blok kanan (alamat cabang)", kop["kanan"], height=130)
     if st.button("Simpan kop"):
+        have = set(D("settings", True).k)
         for k, v in dict(nama=nama, kiri=kiri, kanan=kanan).items():
-            run(delete(settings).where(settings.c.k == k))
-            run(insert(settings).values(k=k, v=v))
+            W("update", "settings", k, {"v": v}) if k in have else W("insert", "settings", {"k": k, "v": v})
         st.success("Tersimpan.")
     st.subheader("Cadangan data")
-    st.warning("Di Streamlit Cloud, file SQLite **hilang saat aplikasi restart/redeploy**. Untuk data tetap, isi "
-               "`database_url` (Postgres, mis. Supabase/Neon) di *Secrets*, atau unduh cadangan secara rutin.")
-    data = {t.name: q(select(t)).astype(object).where(lambda d: d.notna(), None).to_dict("records")
-            for t in (clients, couriers, receipts, settings)}
+    data = {t: D(t, True).to_dict("records") for t in COLS}
     st.download_button("⬇️ Unduh cadangan (JSON)", json.dumps(data, ensure_ascii=False, default=str, indent=1),
                        f"cadangan-tanda-terima-{datetime.now(WIB):%Y%m%d}.json", "application/json")
     up = st.file_uploader("Pulihkan dari cadangan (menimpa semua data)", type="json")
     if up and st.button("Pulihkan sekarang"):
         d = json.load(up)
-        with eng.begin() as c:
-            for t in (receipts, clients, couriers, settings):
-                c.execute(delete(t))
-                if d.get(t.name):
-                    c.execute(insert(t), d[t.name])
+        for t in COLS:
+            W("replace", t, d.get(t, []))
         st.success("Data dipulihkan.")
     st.subheader("Data contoh")
     if st.button("Isi data contoh (fiktif)"):
-        run(insert(clients).values(nama="PT CONTOH ABADI Tbk", kode="CABD", alamat1="Menara Contoh Lt. 10",
-                                   alamat2="Jl. Jenderal Sudirman Kav. 1", alamat3="Jakarta 10220", alamat4="",
-                                   kontak="Bpk. Budi\nIbu Sari"))
-        with eng.begin() as c:
-            c.execute(insert(couriers), [{"nama": "Pengantar A", "aktif": 1}, {"nama": "Pengantar B", "aktif": 1}])
+        W("insert", "clients", dict(nama="PT CONTOH ABADI Tbk", kode="CABD", alamat1="Menara Contoh Lt. 10",
+                                    alamat2="Jl. Jenderal Sudirman Kav. 1", alamat3="Jakarta 10220", alamat4="",
+                                    kontak="Bpk. Budi\nIbu Sari"))
+        for n in ("Pengantar A", "Pengantar B"):
+            W("insert", "couriers", {"nama": n, "aktif": 1})
         st.success("Data contoh ditambahkan.")
 
 
