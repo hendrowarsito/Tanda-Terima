@@ -37,7 +37,11 @@ def secret(k, d=None):
 # ---------- Database ----------
 @st.cache_resource
 def get_engine():
-    return create_engine(secret("database_url", "sqlite:///tandaterima.db"), pool_pre_ping=True)
+    url = str(secret("database_url", "sqlite:///tandaterima.db")).strip()
+    for pre in ("postgres://", "postgresql://", "postgresql+psycopg2://"):  # pakai driver psycopg v3
+        if url.startswith(pre):
+            url = "postgresql+psycopg://" + url[len(pre):]
+    return create_engine(url, pool_pre_ping=True)
 
 
 eng = get_engine()
