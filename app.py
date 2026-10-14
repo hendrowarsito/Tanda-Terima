@@ -1,1116 +1,794 @@
-import { useEffect, useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  Download,
-  FilePlus2,
-  LayoutDashboard,
-  Plus,
-  Printer,
-  ScrollText,
-  Settings,
-  Trash2,
-  Users,
-} from "lucide-react";
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import {
-  type Client,
-  type Courier,
-  type Item,
-  type Jenis,
-  type Receipt,
-  type Status,
-  EMPTY_CLIENT,
-  JENIS,
-  JENIS_KEYS,
-  KOP,
-  STATUS,
-  addDays,
-  blankItem,
-  contactsOf,
-  duplicateNomors,
-  formatNomor,
-  nextSeq,
-  nowJakarta,
-} from "@/lib/tanda/model";
-import { parseBackup, toBackup, useDesk, type DeskData } from "@/lib/tanda/store";
-import { SlipPreview, type PrintMode } from "@/components/tanda/sheet";
+"""Tanda Terima — prototipe pengganti OmniForm (Streamlit + Google Sheets / SQLite + ReportLab)."""
+import base64, io, json, sqlite3
+from datetime import datetime, timedelta
+from pathlib import Path
+from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo
 
-type PageId = "buat" | "riwayat" | "dasbor" | "klien" | "atur";
+import pandas as pd
+import streamlit as st
+try:
+    import pymupdf  # pratinjau PDF -> gambar
+except ImportError:
+    pymupdf = None
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.platypus import Paragraph
 
-const NAV: { id: PageId; label: string; icon: typeof FilePlus2 }[] = [
-  { id: "buat", label: "Buat", icon: FilePlus2 },
-  { id: "riwayat", label: "Riwayat", icon: ScrollText },
-  { id: "dasbor", label: "Dasbor", icon: LayoutDashboard },
-  { id: "klien", label: "Klien", icon: Users },
-  { id: "atur", label: "Pengaturan", icon: Settings },
-];
+st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
+WIB = ZoneInfo("Asia/Jakarta")
+JENIS = {"PR": "Proposal", "INV": "Invoice", "KW": "Kwitansi", "LP": "Laporan"}
+STATUS = ["Draft", "Diserahkan", "Diterima", "Arsip"]
+BLN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus",
+       "September", "Oktober", "November", "Desember"]
+KOP = {"nama": "SUWENDHO RINALDY & REKAN",
+       "kiri": "KANTOR JASA PENILAI PUBLIK\nNomor Izin Usaha KJPP: 2.09.0059\nNomor Izin Cabang KJPP: 1138/KM.1/2017\nPenilai Properti dan Bisnis",
+       "kanan": "Kantor Cabang Jakarta\nKomplek Kalibata Indah Blok K16-17\nJl. Rawajati Timur, Pancoran\nJakarta Selatan 12750\nT (021) 7970913 / 799-4521\nE ocky@srr.co.id\nWilayah Kerja: Seluruh Indonesia\nKantor Cabang: Jakarta (P/B), Bandung (P)"}
+COLS = {"clients": ["id", "nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
+        "couriers": ["id", "nama", "aktif"],
+        "receipts": ["id", "jenis", "tahun", "seq", "nomor", "tanggal", "jam", "client_id", "up",
+                     "courier_id", "status", "catatan", "items", "created_at"],
+        "settings": ["k", "v"]}
+INTS = {"id", "tahun", "seq", "client_id", "courier_id", "aktif"}
 
-const MODES: { id: PrintMode; label: string }[] = [
-  { id: "tt", label: "Tanda terima" },
-  { id: "amplop", label: "Amplop" },
-  { id: "semua", label: "Keduanya" },
-];
 
-function Mark() {
-  return (
-    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-navy text-[11px] font-bold leading-none tracking-tight text-form-paper">
-      SR
-    </span>
-  );
-}
+def secret(k, d=None):
+    try:
+        return st.secrets.get(k, d)
+    except Exception:
+        return d
 
-function ModePicker({ mode, onChange }: { mode: PrintMode; onChange: (m: PrintMode) => void }) {
-  return (
-    <div role="radiogroup" aria-label="Yang dicetak" className="no-print flex flex-wrap gap-2">
-      {MODES.map((m) => (
-        <button
-          key={m.id}
-          type="button"
-          role="radio"
-          aria-checked={mode === m.id}
-          className="btn btn-line"
-          onClick={() => onChange(m.id)}
-        >
-          {m.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
-function openPrintTab(id: number, mode: PrintMode) {
-  const url = new URL(window.location.href);
-  url.searchParams.set("cetak", String(id));
-  url.searchParams.set("mode", mode);
-  window.open(url.toString(), "_blank", "noopener");
-}
+# ---------- Penyimpanan: Google Sheets (utama) atau SQLite (cadangan) ----------
+def clean(v):
+    if v is None or (not isinstance(v, str) and pd.isna(v)):
+        return ""
+    if hasattr(v, "item"):
+        v = v.item()
+    return int(v) if isinstance(v, bool) else v
 
-function homeHref() {
-  return window.location.pathname;
-}
 
-function PrintActions({ id, mode }: { id: number; mode: PrintMode }) {
-  return (
-    <div className="no-print flex flex-wrap items-center gap-3">
-      <button type="button" className="btn btn-primary" onClick={() => window.print()}>
-        <Printer className="size-4" aria-hidden />
-        Cetak
-      </button>
-      <button type="button" className="btn btn-line" onClick={() => openPrintTab(id, mode)}>
-        Buka di tab baru
-      </button>
-      <p className="max-w-md text-xs leading-relaxed text-muted">
-        Di dialog cetak pilih kertas A5 dan margin none. Bisa juga A4 pada skala 100%, lalu potong setengah.
-        Untuk berkas PDF, pilih Simpan sebagai PDF. Jika dialog tidak muncul, buka di tab baru lalu cetak dari sana.
-      </p>
-    </div>
-  );
-}
+def cast(d, t):
+    d = d.reindex(columns=COLS[t]).fillna("")
+    for c in COLS[t]:
+        if c in INTS:
+            d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0).astype(int)
+        else:
+            d[c] = d[c].astype(str)
+    return d.reset_index(drop=True)
 
-function clientName(clients: Client[], id: number): string {
-  return clients.find((c) => c.id === id)?.nama ?? "Klien tidak ditemukan";
-}
 
-function courierName(couriers: Courier[], id: number): string {
-  return couriers.find((c) => c.id === id)?.nama ?? "";
-}
+class SqliteStore:
+    def __init__(self, path):
+        self.c = sqlite3.connect(path, check_same_thread=False)
+        for t, cols in COLS.items():
+            defs = ", ".join('"id" INTEGER PRIMARY KEY AUTOINCREMENT' if c == "id" else
+                             '"k" TEXT PRIMARY KEY' if t == "settings" and c == "k" else f'"{c}"' for c in cols)
+            self.c.execute(f"CREATE TABLE IF NOT EXISTS {t} ({defs})")
+        self.c.commit()
 
-const CHART: { key: Jenis; fill: string; opacity: number }[] = [
-  { key: "PR", fill: "var(--color-navy)", opacity: 1 },
-  { key: "INV", fill: "var(--color-kop)", opacity: 1 },
-  { key: "KW", fill: "var(--color-muted)", opacity: 1 },
-  { key: "LP", fill: "var(--color-navy)", opacity: 0.45 },
-];
+    def read(self, t):
+        return pd.read_sql(f"SELECT * FROM {t}", self.c)
 
-function CetakPage({ id, mode }: { id: number; mode: PrintMode }) {
-  const receipt = useDesk((s) => s.receipts.find((r) => r.id === id) ?? null);
-  const clients = useDesk((s) => s.clients);
-  const couriers = useDesk((s) => s.couriers);
-  const kop = useDesk((s) => s.kop);
+    def insert(self, t, vals):
+        ks = [k for k in COLS[t] if k in vals]
+        cur = self.c.execute(f"INSERT INTO {t} ({','.join(chr(34) + k + chr(34) for k in ks)}) "
+                             f"VALUES ({','.join('?' * len(ks))})", [clean(vals[k]) for k in ks])
+        self.c.commit()
+        return cur.lastrowid
 
-  if (!receipt) {
-    return (
-      <div className="no-print mx-auto max-w-lg px-4 py-8">
-        <p className="text-sm">Tanda terima ini tidak ada di peramban ini.</p>
-        <a className="btn btn-line mt-4" href={homeHref()}>
-          Kembali
-        </a>
-      </div>
-    );
-  }
+    def update(self, t, key, vals):
+        self.c.execute(f"UPDATE {t} SET {','.join(chr(34) + k + chr(34) + '=?' for k in vals)} "
+                       f'WHERE "{COLS[t][0]}"=?', [clean(v) for v in vals.values()] + [key])
+        self.c.commit()
 
-  return (
-    <div className="desk-shell bg-paper">
-      <div className="no-print mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 py-4">
-        <button type="button" className="btn btn-primary" onClick={() => window.print()}>
-          <Printer className="size-4" aria-hidden />
-          Cetak
-        </button>
-        <a className="btn btn-line" href={homeHref()}>
-          Kembali
-        </a>
-        <p className="max-w-md text-xs leading-relaxed text-muted">
-          Kertas A5, margin none. Untuk PDF, pilih Simpan sebagai PDF. Nomor {receipt.nomor}.
-        </p>
-      </div>
-      <SlipPreview
-        mode={mode}
-        slip={{
-          nomor: receipt.nomor,
-          tanggal: receipt.tanggal,
-          jam: receipt.jam,
-          up: receipt.up,
-          catatan: receipt.catatan,
-          items: receipt.items,
-          client: clients.find((c) => c.id === receipt.client_id) ?? null,
-          kurir: courierName(couriers, receipt.courier_id),
-          kop,
-        }}
-      />
-    </div>
-  );
-}
+    def delete(self, t, key):
+        self.c.execute(f'DELETE FROM {t} WHERE "{COLS[t][0]}"=?', [key])
+        self.c.commit()
 
-export function Desk() {
-  const [page, setPage] = useState<PageId>("buat");
-  const [job, setJob] = useState<{ id: number; mode: PrintMode } | null>(null);
-  useEffect(() => {
-    const q = new URLSearchParams(window.location.search);
-    const id = Number(q.get("cetak"));
-    const mode = q.get("mode");
-    const isPrint =
-      Number.isFinite(id) && id > 0 && (mode === "tt" || mode === "amplop" || mode === "semua");
-    void Promise.resolve(useDesk.persist.rehydrate()).finally(() => {
-      if (isPrint) setJob({ id, mode: mode as PrintMode });
-    });
-  }, []);
+    def replace(self, t, recs):
+        self.c.execute(f"DELETE FROM {t}")
+        for r in recs:
+            self.insert(t, r)
 
-  if (job) return <CetakPage id={job.id} mode={job.mode} />;
 
-  return (
-    <div className="desk-shell min-h-dvh lg:grid lg:grid-cols-[15rem_minmax(0,1fr)]">
-      <aside className="no-print hidden border-r border-line bg-sheet lg:flex lg:flex-col">
-        <div className="flex items-center gap-3 px-4 py-5">
-          <Mark />
-          <div>
-            <p className="text-sm font-semibold leading-tight">Tanda Terima</p>
-            <p className="text-xs text-muted">KJPP SRR</p>
-          </div>
-        </div>
-        <nav className="flex flex-col gap-1 px-3" aria-label="Menu">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              aria-current={page === item.id ? "page" : undefined}
-              className="btn btn-line justify-start"
-              onClick={() => setPage(item.id)}
-            >
-              <item.icon className="size-4" aria-hidden />
-              {item.label}
-            </button>
-          ))}
-        </nav>
-        <p className="mt-auto px-4 py-5 text-xs leading-relaxed text-muted">
-          Tata letak formulir mengikuti template OmniForm dan tidak diubah. Data tersimpan di peramban ini.
-        </p>
-      </aside>
+class SheetsStore:
+    """Tiap tabel = satu worksheet; baris 1 = judul kolom. Kolom pertama = kunci (id / k)."""
 
-      <div className="min-w-0">
-        <header className="no-print sticky top-0 z-20 border-b border-line bg-paper/95 backdrop-blur lg:hidden">
-          <div className="flex items-center gap-3 px-4 py-3">
-            <Mark />
-            <p className="text-sm font-semibold">Tanda Terima</p>
-          </div>
-          <nav className="flex gap-2 overflow-x-auto px-3 pb-3" aria-label="Menu">
-            {NAV.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={page === item.id ? "page" : undefined}
-                className="btn btn-line shrink-0"
-                onClick={() => setPage(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-        </header>
-        <main className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6">
-          {page === "buat" ? <Buat /> : null}
-          {page === "riwayat" ? <Riwayat /> : null}
-          {page === "dasbor" ? <Dasbor /> : null}
-          {page === "klien" ? <KlienPage /> : null}
-          {page === "atur" ? <Atur /> : null}
-        </main>
-      </div>
-    </div>
-  );
-}
+    def __init__(self, sid, info):
+        import gspread
+        self.gs = gspread
+        self.sh = gspread.service_account_from_dict(dict(info)).open_by_key(sid)
+        have = {w.title: w for w in self.sh.worksheets()}
+        self.ws = {}
+        for t, cols in COLS.items():
+            w = have.get(t) or self.sh.add_worksheet(title=t, rows=1000, cols=len(cols))
+            if w.row_values(1) != cols:
+                w.update(values=[cols], range_name="A1")
+            self.ws[t] = w
 
-function Buat() {
-  const clients = useDesk((s) => s.clients);
-  const couriers = useDesk((s) => s.couriers);
-  const receipts = useDesk((s) => s.receipts);
-  const kop = useDesk((s) => s.kop);
-  const saveReceipt = useDesk((s) => s.saveReceipt);
-  const addSamples = useDesk((s) => s.addSamples);
+    def read(self, t):
+        n = len(COLS[t])
+        rows = [(r + [""] * n)[:n] for r in self.ws[t].get_all_values()[1:] if r and r[0] != ""]
+        return pd.DataFrame(rows, columns=COLS[t])
 
-  const sorted = useMemo(
-    () => [...clients].sort((a, b) => a.nama.localeCompare(b.nama, "id")),
-    [clients],
-  );
-  const active = couriers.filter((c) => c.aktif);
+    def _row(self, t, key):
+        return self.ws[t].col_values(1).index(str(key)) + 1
 
-  const [jenis, setJenis] = useState<Jenis>("PR");
-  const [clock, setClock] = useState({ date: "2026-10-14", time: "09:00" });
-  const [clientId, setClientId] = useState(sorted[0]?.id ?? 0);
-  const [courierId, setCourierId] = useState(active[0]?.id ?? 0);
-  const [up, setUp] = useState(contactsOf(sorted[0])[0] ?? "");
-  const [catatan, setCatatan] = useState("");
-  const [rows, setRows] = useState<{ key: string; item: Item }[]>([{ key: "awal", item: blankItem() }]);
-  const [error, setError] = useState("");
-  const [last, setLast] = useState<Receipt | null>(null);
-  const [mode, setMode] = useState<PrintMode>("tt");
+    def insert(self, t, vals):
+        cols = COLS[t]
+        if cols[0] == "id":
+            nums = [int(x) for x in self.ws[t].col_values(1)[1:] if str(x).isdigit()]
+            vals = {**vals, "id": max(nums, default=0) + 1}
+        self.ws[t].append_row([clean(vals.get(c, "")) for c in cols], table_range="A1")
+        return vals.get("id")
 
-  useEffect(() => {
-    const n = nowJakarta();
-    setClock({ date: n.date, time: n.time });
-  }, []);
+    def update(self, t, key, vals):
+        r = self._row(t, key)
+        self.ws[t].batch_update([{"range": self.gs.utils.rowcol_to_a1(r, COLS[t].index(k) + 1),
+                                  "values": [[clean(v)]]} for k, v in vals.items()])
 
-  const client = sorted.find((c) => c.id === clientId) ?? sorted[0] ?? null;
-  const courier = active.find((c) => c.id === courierId) ?? active[0] ?? null;
-  const tahun = Number(clock.date.slice(0, 4)) || 2026;
-  const previewNo = formatNomor(nextSeq(receipts, jenis, tahun), jenis);
-  const ups = contactsOf(client ?? undefined);
+    def delete(self, t, key):
+        self.ws[t].delete_rows(self._row(t, key))
 
-  if (!client || !courier) {
-    return (
-      <section className="panel max-w-xl p-5">
-        <h1 className="text-xl font-semibold">Buat tanda terima</h1>
-        <p className="mt-2 text-sm leading-relaxed text-muted">
-          Isi dulu klien dan pengantar yang masih aktif. Data contoh bersifat fiktif dan bisa dihapus.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button type="button" className="btn btn-primary" onClick={addSamples}>
-            Isi data contoh
-          </button>
-        </div>
-      </section>
-    );
-  }
+    def replace(self, t, recs):
+        self.ws[t].clear()
+        self.ws[t].update(values=[COLS[t]] + [[clean(r.get(c, "")) for c in COLS[t]] for r in recs],
+                          range_name="A1")
 
-  if (last) {
-    const savedClient = clients.find((c) => c.id === last.client_id) ?? null;
-    return (
-      <section className="space-y-4">
-        <div className="no-print panel flex flex-wrap items-center justify-between gap-3 p-4">
-          <p className="text-sm">
-            Tanda terima <strong className="tabular-nums">{last.nomor}</strong> tersimpan. Siap dicetak.
-          </p>
-          <button
-            type="button"
-            className="btn btn-line"
-            onClick={() => {
-              const n = nowJakarta();
-              setClock({ date: n.date, time: n.time });
-              setRows([{ key: `n${Date.now()}`, item: blankItem() }]);
-              setCatatan("");
-              setLast(null);
-              setError("");
-            }}
-          >
-            Tutup dan buat baru
-          </button>
-        </div>
-        <div className="no-print space-y-3">
-          <ModePicker mode={mode} onChange={setMode} />
-          <PrintActions id={last.id} mode={mode} />
-        </div>
-        <SlipPreview
-          mode={mode}
-          slip={{
-            nomor: last.nomor,
-            tanggal: last.tanggal,
-            jam: last.jam,
-            up: last.up,
-            catatan: last.catatan,
-            items: last.items,
-            client: savedClient,
-            kurir: courierName(couriers, last.courier_id),
-            kop,
-          }}
-        />
-      </section>
-    );
-  }
 
-  function patch(i: number, part: Partial<Item>) {
-    setRows((list) => list.map((row, idx) => (idx === i ? { ...row, item: { ...row.item, ...part } } : row)));
-  }
+@st.cache_resource
+def get_store():
+    sid, info = secret("gsheet_id"), secret("gcp_service_account")
+    return SheetsStore(sid, info) if sid and info else SqliteStore("tandaterima.db")
 
-  const filled = rows.map((r) => r.item).filter((it) => it.Uraian.trim());
 
-  return (
-    <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-      <section className="no-print space-y-4">
-        <div>
-          <h1 className="text-xl font-semibold">Buat tanda terima</h1>
-          <p className="mt-1 text-sm text-muted">Nomor {previewNo} ditetapkan saat disimpan.</p>
-        </div>
-        <div className="panel space-y-3 p-4">
-          <label className="block">
-            <span className="lbl">Jenis</span>
-            <select className="field" value={jenis} onChange={(e) => setJenis(e.target.value as Jenis)}>
-              {JENIS_KEYS.map((k) => (
-                <option key={k} value={k}>
-                  {k} — {JENIS[k]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="lbl">Tanggal</span>
-              <input className="field" type="date" value={clock.date} onChange={(e) => setClock({ ...clock, date: e.target.value })} />
-            </label>
-            <label className="block">
-              <span className="lbl">Jam</span>
-              <input className="field" type="time" value={clock.time} onChange={(e) => setClock({ ...clock, time: e.target.value })} />
-            </label>
-          </div>
-          <label className="block">
-            <span className="lbl">Pengantar</span>
-            <select
-              className="field"
-              value={courier.id}
-              onChange={(e) => setCourierId(Number(e.target.value))}
-            >
-              {active.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.nama}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="lbl">Kepada</span>
-            <select className="field" value={client.id} onChange={(e) => {
-              const id = Number(e.target.value);
-              setClientId(id);
-              const next = sorted.find((c) => c.id === id);
-              setUp(contactsOf(next)[0] ?? "");
-            }}>
-              {sorted.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.nama}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="text-xs leading-relaxed text-muted">
-            {[client.alamat1, client.alamat2, client.alamat3, client.alamat4].filter(Boolean).join(" · ") || "Alamat belum diisi."}
-          </p>
-          <label className="block">
-            <span className="lbl">U.p.</span>
-            <input className="field" list="up-list" value={up} onChange={(e) => setUp(e.target.value)} placeholder="Kosongkan jika tidak perlu" />
-            <datalist id="up-list">
-              {ups.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-          </label>
-        </div>
+try:
+    store = get_store()
+except Exception as _e:  # tampilkan diagnosis (pesan asli Streamlit disembunyikan)
+    st.error("Tidak bisa terhubung ke Google Sheets.")
+    st.code(f"gsheet_id = {secret('gsheet_id')}\n"
+            f"service account = {(secret('gcp_service_account') or {}).get('client_email')}\n"
+            f"{type(_e).__name__}: {_e}")
+    st.markdown(
+        "**Cek berikut:**\n"
+        "1. Bagikan (*Share*) Google Sheet ke email *service account* di atas dengan peran **Editor**.\n"
+        "2. Di Google Cloud, aktifkan **Google Sheets API** dan **Google Drive API** untuk project-nya.\n"
+        "3. `gsheet_id` = bagian URL antara `/d/` dan `/edit`.\n"
+        "4. `private_key` di Secrets harus utuh, diapit tanda kutip, dengan `\\n` tetap seperti di file JSON.\n"
+        "5. Mau mencoba dulu tanpa Sheets? Hapus `gsheet_id` dan `[gcp_service_account]` di Secrets (SQLite sementara).")
+    st.stop()
 
-        <div className="panel space-y-3 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold">Daftar dokumen</h2>
-            <button
-              type="button"
-              className="btn btn-line"
-              onClick={() => setRows((list) => [...list, { key: `k${Date.now()}`, item: blankItem() }])}
-            >
-              <Plus className="size-4" aria-hidden />
-              Baris
-            </button>
-          </div>
-          {rows.map((row, i) => (
-            <div key={row.key} className="grid gap-2 border-t border-line pt-3 first:border-t-0 first:pt-0">
-              <label className="block">
-                <span className="lbl">Uraian</span>
-                <input className="field" value={row.item.Uraian} onChange={(e) => patch(i, { Uraian: e.target.value })} />
-              </label>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                <label className="block">
-                  <span className="lbl">Jumlah</span>
-                  <input className="field" value={row.item.Jumlah} onChange={(e) => patch(i, { Jumlah: e.target.value })} />
-                </label>
-                <button
-                  type="button"
-                  className="btn btn-line mt-5"
-                  aria-label="Hapus baris"
-                  disabled={rows.length === 1}
-                  onClick={() => setRows((list) => list.filter((_, idx) => idx !== i))}
-                >
-                  <Trash2 className="size-4" aria-hidden />
-                </button>
-              </div>
-              <label className="block">
-                <span className="lbl">Keterangan</span>
-                <input className="field" value={row.item.Keterangan} onChange={(e) => patch(i, { Keterangan: e.target.value })} />
-              </label>
-            </div>
-          ))}
-          <label className="block">
-            <span className="lbl">Catatan</span>
-            <input className="field" value={catatan} onChange={(e) => setCatatan(e.target.value)} placeholder="Opsional" />
-          </label>
-          {error ? <p className="text-sm font-medium text-navy">{error}</p> : null}
-          <button
-            type="button"
-            className="btn btn-primary w-full"
-            onClick={() => {
-              if (!filled.length) {
-                setError("Isi minimal satu baris uraian.");
-                return;
-              }
-              if (!clock.date || !clock.time) {
-                setError("Tanggal dan jam wajib diisi.");
-                return;
-              }
-              const rec = saveReceipt({
-                jenis,
-                tanggal: clock.date,
-                jam: clock.time,
-                client_id: client.id,
-                up: up.trim(),
-                courier_id: courier.id,
-                catatan: catatan.trim(),
-                items: filled,
-              });
-              setError("");
-              setLast(rec);
-              setMode("tt");
-            }}
-          >
-            Simpan
-          </button>
-        </div>
-      </section>
 
-      <section className="min-w-0">
-        <p className="no-print mb-3 text-xs text-muted">Pratinjau template. Tombol cetak muncul setelah disimpan.</p>
-        <SlipPreview
-          mode="tt"
-          slip={{
-            nomor: previewNo,
-            tanggal: clock.date,
-            jam: clock.time,
-            up,
-            catatan,
-            items: filled,
-            client,
-            kurir: courier.nama,
-            kop,
-          }}
-        />
-      </section>
-    </div>
-  );
-}
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached(t):
+    return cast(store.read(t), t)
 
-function Riwayat() {
-  const receipts = useDesk((s) => s.receipts);
-  const clients = useDesk((s) => s.clients);
-  const couriers = useDesk((s) => s.couriers);
-  const [q, setQ] = useState("");
-  const [jenisOn, setJenisOn] = useState<Jenis[]>([]);
-  const [statusOn, setStatusOn] = useState<Status[]>([]);
-  const [sel, setSel] = useState<number | null>(null);
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return [...receipts]
-      .filter((r) => {
-        if (jenisOn.length && !jenisOn.includes(r.jenis)) return false;
-        if (statusOn.length && !statusOn.includes(r.status)) return false;
-        if (!needle) return true;
-        const hay = [
-          r.nomor,
-          r.tanggal,
-          r.up,
-          r.catatan,
-          clientName(clients, r.client_id),
-          courierName(couriers, r.courier_id),
-          ...r.items.flatMap((it) => [it.Uraian, it.Jumlah, it.Keterangan]),
-        ]
-          .join(" ")
-          .toLowerCase();
-        return hay.includes(needle);
-      })
-      .sort((a, b) => b.tahun - a.tahun || b.seq - a.seq || b.id - a.id);
-  }, [receipts, clients, couriers, q, jenisOn, statusOn]);
+def D(t, fresh=False):
+    """Baca tabel (di-cache 20 detik agar tidak kena batas kuota Google API)."""
+    return cast(store.read(t), t) if fresh else _cached(t)
 
-  const current = filtered.find((r) => r.id === sel) ?? filtered[0] ?? null;
-  const dups = duplicateNomors(receipts);
 
-  return (
-    <section className="space-y-4">
-      <h1 className="no-print text-xl font-semibold">Riwayat</h1>
-      {dups.length ? (
-        <p className="no-print panel flex items-start gap-2 p-3 text-sm">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-          Nomor ganda pada tahun yang sama: {dups.join(", ")}.
-        </p>
-      ) : null}
-      <div className="no-print space-y-3">
-        <label className="block">
-          <span className="lbl">Cari</span>
-          <input className="field" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Klien, nomor, atau isi dokumen" />
-        </label>
-        <div className="flex flex-wrap gap-2">
-          {JENIS_KEYS.map((k) => (
-            <button
-              key={k}
-              type="button"
-              aria-pressed={jenisOn.includes(k)}
-              className="btn btn-line"
-              onClick={() => setJenisOn((list) => (list.includes(k) ? list.filter((x) => x !== k) : [...list, k]))}
-            >
-              {k}
-            </button>
-          ))}
-          {STATUS.map((s) => (
-            <button
-              key={s}
-              type="button"
-              aria-pressed={statusOn.includes(s)}
-              className="btn btn-line"
-              onClick={() => setStatusOn((list) => (list.includes(s) ? list.filter((x) => x !== s) : [...list, s]))}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      </div>
-      {filtered.length === 0 ? (
-        <p className="no-print text-sm text-muted">Belum ada tanda terima pada saringan ini.</p>
-      ) : (
-        <>
-          <div className="no-print panel overflow-x-auto">
-            <table className="w-full min-w-[40rem] text-left text-sm">
-              <thead className="text-xs uppercase tracking-wide text-muted">
-                <tr>
-                  {["Nomor", "Jenis", "Tanggal", "Jam", "Klien", "Pengantar", "Status"].map((h) => (
-                    <th key={h} className="px-3 py-2 font-semibold">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((r) => (
-                  <tr
-                    key={r.id}
-                    onClick={() => setSel(r.id)}
-                    aria-selected={current?.id === r.id}
-                    className={`cursor-pointer border-t border-line ${current?.id === r.id ? "bg-paper" : ""}`}
-                  >
-                    <td className="px-3 py-2 font-medium tabular-nums">{r.nomor}</td>
-                    <td className="px-3 py-2">{r.jenis}</td>
-                    <td className="px-3 py-2 tabular-nums">{r.tanggal}</td>
-                    <td className="px-3 py-2 tabular-nums">{r.jam}</td>
-                    <td className="px-3 py-2">{clientName(clients, r.client_id)}</td>
-                    <td className="px-3 py-2">{courierName(couriers, r.courier_id) || "—"}</td>
-                    <td className="px-3 py-2">{r.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {current ? <ReceiptDetail key={current.id} receipt={current} /> : null}
-        </>
-      )}
-    </section>
-  );
-}
+def W(op, t, *a):
+    r = getattr(store, op)(t, *a)
+    st.cache_data.clear()
+    return r
 
-function ReceiptDetail({ receipt }: { receipt: Receipt }) {
-  const clients = useDesk((s) => s.clients);
-  const couriers = useDesk((s) => s.couriers);
-  const kop = useDesk((s) => s.kop);
-  const setStatus = useDesk((s) => s.setStatus);
-  const deleteReceipt = useDesk((s) => s.deleteReceipt);
-  const [status, setLocal] = useState<Status>(receipt.status);
-  const [mode, setMode] = useState<PrintMode>("tt");
-  const [arm, setArm] = useState(false);
-  const missing = !clients.some((c) => c.id === receipt.client_id);
 
-  return (
-    <div className="space-y-4">
-      <div className="no-print panel space-y-3 p-4">
-        {missing ? (
-          <p className="text-sm">Klien sudah tidak ada di master. Formulir tetap bisa dicetak dengan baris kepada kosong.</p>
-        ) : null}
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="block min-w-40">
-            <span className="lbl">Status</span>
-            <select className="field" value={status} onChange={(e) => setLocal(e.target.value as Status)}>
-              {STATUS.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </label>
-          <button type="button" className="btn btn-line" onClick={() => setStatus(receipt.id, status)}>
-            Perbarui status
-          </button>
-          {arm ? (
-            <button type="button" className="btn btn-line" onClick={() => deleteReceipt(receipt.id)}>
-              Ya, hapus
-            </button>
-          ) : (
-            <button type="button" className="btn btn-line" onClick={() => setArm(true)}>
-              <Trash2 className="size-4" aria-hidden />
-              Hapus
-            </button>
-          )}
-        </div>
-        <ModePicker mode={mode} onChange={setMode} />
-        <PrintActions id={receipt.id} mode={mode} />
-      </div>
-      <SlipPreview
-        mode={mode}
-        slip={{
-          nomor: receipt.nomor,
-          tanggal: receipt.tanggal,
-          jam: receipt.jam,
-          up: receipt.up,
-          catatan: receipt.catatan,
-          items: receipt.items,
-          client: clients.find((c) => c.id === receipt.client_id) ?? null,
-          kurir: courierName(couriers, receipt.courier_id),
-          kop,
-        }}
-      />
-    </div>
-  );
-}
+def idn(iso):
+    try:
+        d = datetime.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return str(iso)
+    return f"{d.day} {BLN[d.month - 1]} {d.year}"
 
-function Dasbor() {
-  const receipts = useDesk((s) => s.receipts);
-  const clients = useDesk((s) => s.clients);
-  const couriers = useDesk((s) => s.couriers);
-  const staleDays = useDesk((s) => s.staleDays);
-  const setStaleDays = useDesk((s) => s.setStaleDays);
-  const today = nowJakarta().date;
-  const cutoff = addDays(today, -staleDays);
-  const month = today.slice(0, 7);
-  const overdue = receipts.filter((r) => r.status === "Diserahkan" && r.tanggal < cutoff);
-  const byCourier = new Map<string, number>();
-  for (const r of receipts) {
-    const name = courierName(couriers, r.courier_id) || "—";
-    byCourier.set(name, (byCourier.get(name) ?? 0) + 1);
-  }
-  const buckets = new Map<string, Record<Jenis, number>>();
-  for (const r of receipts) {
-    const key = r.tanggal.slice(0, 7);
-    if (key.length !== 7) continue;
-    const row = buckets.get(key) ?? { PR: 0, INV: 0, KW: 0, LP: 0 };
-    row[r.jenis] += 1;
-    buckets.set(key, row);
-  }
-  const series = [...buckets.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([bulan, n]) => ({ bulan, ...n }));
-  const maxC = Math.max(1, ...byCourier.values());
 
-  if (!receipts.length) {
-    return (
-      <section>
-        <h1 className="text-xl font-semibold">Dasbor</h1>
-        <p className="mt-2 text-sm text-muted">Belum ada tanda terima.</p>
-      </section>
-    );
-  }
+def get_kop():
+    s = D("settings")
+    return {**KOP, **dict(zip(s.k, s.v))}
 
-  return (
-    <section className="no-print space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <h1 className="text-xl font-semibold">Dasbor</h1>
-        <label className="block w-40">
-          <span className="lbl">Belum kembali setelah</span>
-          <input
-            className="field"
-            type="number"
-            min={1}
-            max={90}
-            value={staleDays}
-            onChange={(e) => setStaleDays(Number(e.target.value) || 1)}
-          />
-        </label>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-3">
-        {[
-          ["Total", receipts.length],
-          ["Bulan ini", receipts.filter((r) => r.tanggal.startsWith(month)).length],
-          ["Belum kembali", overdue.length],
-        ].map(([label, n]) => (
-          <div key={String(label)} className="panel p-4">
-            <p className="text-xs uppercase tracking-wide text-muted">{label}</p>
-            <p className="mt-1 text-3xl font-semibold tabular-nums">{n}</p>
-          </div>
-        ))}
-      </div>
-      <div className="panel p-4">
-        <h2 className="text-sm font-semibold">Per bulan</h2>
-        <div className="mt-3 h-56">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={series}>
-              <XAxis dataKey="bulan" tick={{ fontSize: 12 }} />
-              <YAxis allowDecimals={false} width={28} tick={{ fontSize: 12 }} />
-              <Tooltip />
-              {CHART.map((c) => (
-                <Bar key={c.key} dataKey={c.key} name={JENIS[c.key]} stackId="jenis" fill={c.fill} fillOpacity={c.opacity} />
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-          {CHART.map((c) => (
-            <li key={c.key} className="flex items-center gap-1.5">
-              <span className="inline-block size-2.5 rounded-sm" style={{ background: c.fill, opacity: c.opacity }} />
-              {c.key} · {JENIS[c.key]}
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div className="panel p-4">
-        <h2 className="mb-3 text-sm font-semibold">Per pengantar</h2>
-        <ul className="space-y-2">
-          {[...byCourier.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => (
-            <li key={name} className="grid grid-cols-[8rem_minmax(0,1fr)_2rem] items-center gap-3 text-sm">
-              <span className="truncate">{name}</span>
-              <span className="h-2 rounded-full bg-line">
-                <span className="block h-2 rounded-full bg-navy" style={{ width: `${(n / maxC) * 100}%` }} />
-              </span>
-              <span className="tabular-nums text-right">{n}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-      {overdue.length ? (
-        <div className="panel p-4">
-          <h2 className="text-sm font-semibold">Belum kembali</h2>
-          <ul className="mt-2 divide-y divide-line text-sm">
-            {overdue.map((r) => (
-              <li key={r.id} className="flex flex-wrap justify-between gap-2 py-2">
-                <span className="font-medium tabular-nums">{r.nomor}</span>
-                <span className="text-muted">{r.tanggal}</span>
-                <span>{clientName(clients, r.client_id)}</span>
-                <span>{courierName(couriers, r.courier_id) || "—"}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </section>
-  );
-}
 
-function KlienPage() {
-  return (
-    <div className="space-y-8">
-      <ClientBook />
-      <CourierBook />
-    </div>
-  );
-}
+def save_receipt(data):
+    for _ in range(4):  # cek ulang setelah menulis: jika nomor bentrok dengan pengguna lain, ulangi
+        d = D("receipts", True)
+        m = d[(d.jenis == data["jenis"]) & (d.tahun == data["tahun"])].seq.max()
+        seq = int(m) + 1 if pd.notna(m) else 1
+        rid = W("insert", "receipts", {**data, "seq": seq, "nomor": f"{seq:04d}-{data['jenis']}"})
+        d = D("receipts", True)
+        dup = d[(d.jenis == data["jenis"]) & (d.tahun == data["tahun"]) & (d.seq == seq)]
+        if len(dup) == 1 or dup.id.min() == rid:
+            return rid
+        W("delete", "receipts", rid)
+    raise RuntimeError("Gagal membuat nomor unik, coba lagi.")
 
-function ClientBook() {
-  const clients = useDesk((s) => s.clients);
-  const saveClient = useDesk((s) => s.saveClient);
-  const deleteClient = useDesk((s) => s.deleteClient);
-  const sorted = useMemo(() => [...clients].sort((a, b) => a.nama.localeCompare(b.nama, "id")), [clients]);
-  const [sel, setSel] = useState<number | "new">("new");
-  const [draft, setDraft] = useState<Client>({ ...EMPTY_CLIENT });
-  const [msg, setMsg] = useState("");
 
-  useEffect(() => {
-    if (sel === "new") setDraft({ ...EMPTY_CLIENT });
-    else {
-      const found = useDesk.getState().clients.find((c) => c.id === sel);
-      setDraft(found ? { ...found } : { ...EMPTY_CLIENT });
-    }
-    setMsg("");
-  }, [sel]);
+def sync(t, df, cols, ref_col, label):
+    """Simpan hasil st.data_editor: tambah / ubah (hanya yang berubah) / hapus (diblokir bila sudah dipakai)."""
+    cur = D(t, True).set_index("id")
+    used = set(D("receipts", True)[ref_col])
+    keep = set()
+    for _, r in df.iterrows():
+        vals = {k: clean(r[k]) for k in cols}
+        if not str(vals[cols[0]]).strip():
+            continue
+        if pd.isna(r["id"]):
+            W("insert", t, vals)
+            continue
+        i = int(r["id"])
+        keep.add(i)
+        if i in cur.index and any(str(cur.at[i, k]) != str(vals[k]) for k in cols):
+            W("update", t, i, vals)
+    for i in cur.index:
+        if i in keep:
+            continue
+        if i in used:
+            st.warning(f"{label} id {i} sudah dipakai di tanda terima, tidak dihapus (nonaktifkan saja).")
+        else:
+            W("delete", t, int(i))
 
-  function set<K extends keyof Client>(key: K, value: Client[K]) {
-    setDraft((d) => ({ ...d, [key]: value }));
-  }
 
-  const fields: { key: keyof Client; label: string; area?: boolean }[] = [
-    { key: "nama", label: "Nama" },
-    { key: "kode", label: "Kode" },
-    { key: "alamat1", label: "Alamat 1" },
-    { key: "alamat2", label: "Alamat 2" },
-    { key: "alamat3", label: "Alamat 3" },
-    { key: "alamat4", label: "Alamat 4" },
-    { key: "kontak", label: "U.p. — satu nama per baris", area: true },
-  ];
+def load_receipts():
+    c = D("clients")[["id", "nama"]].rename(columns={"id": "client_id", "nama": "klien"})
+    k = D("couriers")[["id", "nama"]].rename(columns={"id": "courier_id", "nama": "pengantar"})
+    return D("receipts").merge(c, on="client_id", how="left").merge(k, on="courier_id", how="left")
 
-  return (
-    <section className="no-print space-y-3">
-      <h1 className="text-xl font-semibold">Klien</h1>
-      <div className="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)]">
-        <div className="panel max-h-[28rem] overflow-auto p-2">
-          <button type="button" className="btn btn-line mb-1 w-full" onClick={() => setSel("new")}>
-            <Plus className="size-4" aria-hidden />
-            Klien baru
-          </button>
-          {sorted.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              aria-current={sel === c.id ? "page" : undefined}
-              className="btn btn-line mb-1 w-full justify-start"
-              onClick={() => setSel(c.id)}
-            >
-              <span className="truncate">{c.nama}</span>
-            </button>
-          ))}
-        </div>
-        <form
-          className="panel space-y-3 p-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!draft.nama.trim()) {
-              setMsg("Nama klien wajib diisi.");
-              return;
-            }
-            saveClient({ ...draft, nama: draft.nama.trim() });
-            setDraft({ ...EMPTY_CLIENT });
-            setMsg("Tersimpan.");
-            setSel("new");
-          }}
-        >
-          {fields.map((f) => (
-            <label key={f.key} className="block">
-              <span className="lbl">{f.label}</span>
-              {f.area ? (
-                <textarea className="field min-h-24" value={String(draft[f.key])} onChange={(e) => set(f.key, e.target.value)} />
-              ) : (
-                <input className="field" value={String(draft[f.key])} onChange={(e) => set(f.key, e.target.value)} />
-              )}
-            </label>
-          ))}
-          {msg ? <p className="text-sm text-navy">{msg}</p> : null}
-          <div className="flex flex-wrap gap-2">
-            <button type="submit" className="btn btn-primary">Simpan klien</button>
-            {sel !== "new" ? (
-              <button
-                type="button"
-                className="btn btn-line"
-                onClick={() => {
-                  const err = deleteClient(sel);
-                  setMsg(err ?? "Klien dihapus.");
-                  if (!err) setSel("new");
-                }}
-              >
-                Hapus
-              </button>
-            ) : null}
-          </div>
-        </form>
-      </div>
-    </section>
-  );
-}
 
-function CourierBook() {
-  const couriers = useDesk((s) => s.couriers);
-  const saveCourier = useDesk((s) => s.saveCourier);
-  const deleteCourier = useDesk((s) => s.deleteCourier);
-  const [nama, setNama] = useState("");
-  const [msg, setMsg] = useState("");
+# ---------- PDF: setengah A4 (A5 landscape), meniru formulir OmniForm ----------
+PAGE = (210 * mm, 148.5 * mm)
+BLUE = colors.HexColor("#1b1b8a")
+NAVY = colors.HexColor("#301d6d")
+COLW = [9.9, 90.2, 20.1, 49.8]  # mm (total 170)
+LEFT, RIGHT = 20.2, 190.2
+TOP_T, HEAD_H, ROW_H, MAX_BOTTOM = 68.6, 5.3, 5.5, 119.0  # mm dari tepi atas
+LOGO_FILE = Path(globals().get("__file__", "app.py")).with_name("logo.png")  # opsional: logo asli
+_S_NAMA = 46.7 * mm / stringWidth(KOP["nama"], "Helvetica", 12.5) * 100
+_S_BODY = 50.5 * mm / stringWidth("Nomor Izin Cabang KJPP: 1138/KM.1/2017", "Helvetica", 9) * 100
 
-  return (
-    <section className="no-print space-y-3">
-      <h2 className="text-xl font-semibold">Pengantar</h2>
-      <ul className="panel divide-y divide-line">
-        {couriers.map((c) => (
-          <li key={c.id} className="flex flex-wrap items-center gap-2 p-3">
-            <input
-              className="field min-w-40 flex-1"
-              value={c.nama}
-              aria-label={`Nama ${c.nama}`}
-              onChange={(e) => saveCourier({ ...c, nama: e.target.value })}
-            />
-            <button
-              type="button"
-              className="btn btn-line"
-              aria-pressed={c.aktif}
-              onClick={() => saveCourier({ ...c, aktif: !c.aktif })}
-            >
-              {c.aktif ? "Aktif" : "Nonaktif"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-line"
-              onClick={() => setMsg(deleteCourier(c.id) ?? "Pengantar dihapus.")}
-            >
-              Hapus
-            </button>
-          </li>
-        ))}
-      </ul>
-      <form
-        className="flex flex-wrap gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!nama.trim()) return;
-          saveCourier({ id: 0, nama: nama.trim(), aktif: true });
-          setNama("");
-          setMsg("Pengantar ditambahkan.");
-        }}
-      >
-        <input className="field max-w-xs" value={nama} onChange={(e) => setNama(e.target.value)} placeholder="Nama pengantar" aria-label="Nama pengantar baru" />
-        <button type="submit" className="btn btn-primary">Tambah</button>
-      </form>
-      {msg ? <p className="text-sm text-navy">{msg}</p> : null}
-    </section>
-  );
-}
 
-function Atur() {
-  const kop = useDesk((s) => s.kop);
-  const setKop = useDesk((s) => s.setKop);
-  const addSamples = useDesk((s) => s.addSamples);
-  const replaceAll = useDesk((s) => s.replaceAll);
-  const wipe = useDesk((s) => s.wipe);
-  const [draft, setDraft] = useState(kop);
-  const [msg, setMsg] = useState("");
-  const [pending, setPending] = useState<{ data: DeskData; skipped: number } | null>(null);
-  const [armWipe, setArmWipe] = useState(false);
+def _cond(c, txt, x, y, size, scale, maxw):
+    """Teks 'condensed' (diperlebar-sempit horizontal) seperti kop aslinya."""
+    sc = min(scale, maxw / max(stringWidth(txt, "Helvetica", size), 1) * 100)
+    t = c.beginText(x, y)
+    t.setFont("Helvetica", size)
+    t.setHorizScale(sc)
+    t.textOut(txt)
+    t.setHorizScale(100)  # kembalikan agar teks berikutnya normal
+    c.drawText(t)
 
-  useEffect(() => setDraft(kop), [kop]);
 
-  return (
-    <section className="no-print max-w-2xl space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Pengaturan</h1>
-        <p className="mt-1 text-sm leading-relaxed text-muted">
-          Yang bisa diubah hanya isi kop. Posisi, garis, kolom, dan judul TANDA TERIMA tetap seperti template.
-        </p>
-      </div>
-      <form
-        className="panel space-y-3 p-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setKop(draft);
-          setMsg("Kop tersimpan.");
-        }}
-      >
-        <h2 className="text-sm font-semibold">Kop surat</h2>
-        <label className="block">
-          <span className="lbl">Nama KJPP</span>
-          <input className="field" value={draft.nama} onChange={(e) => setDraft({ ...draft, nama: e.target.value })} />
-        </label>
-        <label className="block">
-          <span className="lbl">Blok kiri</span>
-          <textarea className="field min-h-28" value={draft.kiri} onChange={(e) => setDraft({ ...draft, kiri: e.target.value })} />
-        </label>
-        <label className="block">
-          <span className="lbl">Blok kanan</span>
-          <textarea className="field min-h-36" value={draft.kanan} onChange={(e) => setDraft({ ...draft, kanan: e.target.value })} />
-        </label>
-        <div className="flex flex-wrap gap-2">
-          <button type="submit" className="btn btn-primary">Simpan kop</button>
-          <button type="button" className="btn btn-line" onClick={() => { setDraft({ ...KOP }); setKop({ ...KOP }); setMsg("Kop bawaan dikembalikan."); }}>
-            Kembalikan bawaan
-          </button>
-        </div>
-      </form>
+def _fit(c, txt, x, y, font, size, maxw, align="l"):
+    while size > 6 and stringWidth(txt, font, size) > maxw:
+        size -= 0.25
+    c.setFont(font, size)
+    {"l": c.drawString, "c": c.drawCentredString, "r": c.drawRightString}[align](x, y, txt)
 
-      <div className="panel space-y-3 p-4">
-        <h2 className="text-sm font-semibold">Cadangan</h2>
-        <p className="text-sm leading-relaxed text-muted">
-          JSON ini bisa dipulihkan di sini, dan bentuknya sama dengan cadangan aplikasi Streamlit.
-        </p>
-        <button
-          type="button"
-          className="btn btn-line"
-          onClick={() => {
-            const s = useDesk.getState();
-            const blob = new Blob(
-              [toBackup({ clients: s.clients, couriers: s.couriers, receipts: s.receipts, kop: s.kop, staleDays: s.staleDays })],
-              { type: "application/json" },
-            );
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `cadangan-tanda-terima-${nowJakarta().date.replace(/-/g, "")}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-          }}
-        >
-          <Download className="size-4" aria-hidden />
-          Unduh cadangan
-        </button>
-        <label className="block">
-          <span className="lbl">Pulihkan dari cadangan</span>
-          <input
-            className="field"
-            type="file"
-            accept="application/json,.json"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (!file) return;
-              try {
-                const parsed = parseBackup(JSON.parse(await file.text()));
-                if (!parsed.ok) {
-                  setPending(null);
-                  setMsg(parsed.error);
-                  return;
-                }
-                setPending({ data: parsed.data, skipped: parsed.skipped });
-                setMsg(parsed.skipped ? `${parsed.skipped} baris rusak dilewati.` : "Berkas siap dipulihkan. Data saat ini akan tertimpa.");
-              } catch {
-                setPending(null);
-                setMsg("JSON tidak bisa dibaca.");
-              }
-            }}
-          />
-        </label>
-        {pending ? (
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => {
-              replaceAll(pending.data);
-              setPending(null);
-              setMsg("Data dipulihkan.");
-            }}
-          >
-            Pulihkan sekarang
-          </button>
-        ) : null}
-      </div>
 
-      <div className="panel space-y-3 p-4">
-        <h2 className="text-sm font-semibold">Data di peramban ini</h2>
-        <button type="button" className="btn btn-line" onClick={() => { addSamples(); setMsg("Data contoh ditambahkan bila belum ada."); }}>
-          Isi data contoh
-        </button>
-        {armWipe ? (
-          <button type="button" className="btn btn-line" onClick={() => { wipe(); setArmWipe(false); setMsg("Semua data lokal dihapus. Kop kembali ke bawaan."); }}>
-            Ya, hapus semua
-          </button>
-        ) : (
-          <button type="button" className="btn btn-line" onClick={() => setArmWipe(true)}>
-            Hapus semua data lokal
-          </button>
-        )}
-      </div>
-      {msg ? <p className="text-sm text-navy">{msg}</p> : null}
-    </section>
-  );
-}
+def _mix(c, parts, cx, y, size):
+    x = cx - sum(stringWidth(t, f, size) for t, f in parts) / 2
+    for t, f in parts:
+        c.setFont(f, size)
+        c.drawString(x, y, t)
+        x += stringWidth(t, f, size)
+
+
+def _label(c, x, y, a, b, size=10):
+    c.setFont("Helvetica", size)
+    c.drawString(x, y, a)
+    c.setFont("Helvetica-Oblique", size)
+    c.drawString(x, y - 4 * mm, b)
+
+
+def _addr_lines(cl, up):
+    """Maksimal 4 baris: nama + alamat (digabung bila kebanyakan) + U.p."""
+    addr = [cl[k] for k in ("alamat1", "alamat2", "alamat3", "alamat4") if cl[k]]
+    free = 3 - (1 if up else 0)
+    if len(addr) > free:
+        addr = addr[:free - 1] + [", ".join(addr[free - 1:])]
+    return [cl["nama"]] + addr + ([f"U.p. {up}"] if up else [])
+
+
+def _rows(items):
+    base = ParagraphStyle("p", fontName="Helvetica", fontSize=8, leading=9.4)
+    ctr = ParagraphStyle("pc", parent=base, alignment=1)
+    out = []
+    for n, it in enumerate(items, 1):
+        txt = [escape(str(it.get(k) or "")).replace("\n", "<br/>") for k in ("Uraian", "Jumlah", "Keterangan")]
+        cells = [Paragraph(f"{n}.", ctr), Paragraph(txt[0], base), Paragraph(txt[1], ctr), Paragraph(txt[2], base)]
+        for p, w in zip(cells, COLW):
+            p.wrap((w - 3) * mm, 1000)
+        out.append((cells, max(ROW_H * mm, max(p.height for p in cells) + 1.8 * mm)))
+    return out
+
+
+def _paginate(rows, limit):
+    pages, cur, used = [], [], 0
+    for rw in rows:
+        if cur and used + rw[1] > limit:
+            pages.append(cur)
+            cur, used = [], 0
+        cur.append(rw)
+        used += rw[1]
+    return pages + [cur]
+
+
+def _form(c, r, cl, kurir, kop, rows, pad, pi, np_):
+    H = PAGE[1]
+    T = lambda m: H - m * mm
+    X = lambda m: m * mm
+    # logo
+    lx, ly, ls = 16.2, 6.5, 22
+    if LOGO_FILE.exists():
+        c.drawImage(str(LOGO_FILE), X(lx), T(ly + ls), ls * mm, ls * mm, preserveAspectRatio=True, mask="auto")
+    else:
+        c.setFillColor(NAVY)
+        c.rect(X(lx), T(ly + ls), ls * mm, ls * mm, stroke=0, fill=1)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 22)
+        c.drawRightString(X(lx + .926 * ls), T(ly + .667 * ls), "SR")
+        c.setFont("Helvetica-Bold", 19.5)
+        c.drawRightString(X(lx + .937 * ls), T(ly + .958 * ls), "R")
+    # kop
+    c.setFillColor(BLUE)
+    _cond(c, kop["nama"], X(39), T(12.8), 12.5, _S_NAMA, 62 * mm)
+    y = 16.5
+    for ln in kop["kiri"].split("\n"):
+        _cond(c, ln, X(39), T(y), 9, _S_BODY, 52 * mm)
+        y += 3.4
+    y = 6.5
+    for n, ln in enumerate(kop["kanan"].split("\n")):
+        _fit(c, ln, X(91.6), T(y), "Helvetica-Bold" if n == 0 else "Helvetica", 7, 46.5 * mm)
+        y += 2.85
+    # nomor
+    c.setFillColor(colors.black)
+    c.setStrokeColor(colors.black)
+    c.setFont("Helvetica", 10)
+    c.drawString(X(160), T(14.2), "No.")
+    c.setFont("Helvetica-Oblique", 10)
+    c.drawString(X(160), T(18.4), "Number")
+    c.setLineWidth(.5)
+    c.line(X(166), T(15.2), X(185), T(15.2))
+    _fit(c, r["nomor"], X(175.5), T(14.4), "Helvetica", 11, 18.5 * mm, "c")
+    if np_ > 1:
+        c.setFont("Helvetica", 7.5)
+        c.drawString(X(160), T(22.6), f"Hal. {pi}/{np_}")
+    # garis tebal + kotak judul
+    c.setLineWidth(2)
+    c.line(X(19.5), T(31.9), X(190.3), T(31.9))
+    c.setFillColor(colors.white)
+    c.setLineWidth(1.3)
+    c.roundRect(X(139.2), T(37.8), 36.5 * mm, 11.5 * mm, 2 * mm, stroke=1, fill=1)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 11.5)
+    c.drawCentredString(X(157.45), T(31.1), "TANDA TERIMA")
+    cs = 2.6
+    fw = stringWidth("RECEIPT", "Helvetica-Oblique", 9) + cs * 6
+    t = c.beginText(X(157.45) - fw / 2, T(35.3))
+    t.setFont("Helvetica-Oblique", 9)
+    t.setCharSpace(cs)
+    t.textOut("RECEIPT")
+    t.setCharSpace(0)  # kembalikan jarak huruf
+    c.drawText(t)
+    # Kepada
+    c.setFont("Helvetica", 10)
+    c.drawString(X(LEFT), T(38.8), "Kepada:")
+    c.setLineWidth(.5)
+    c.line(X(LEFT), T(39.4), X(LEFT) + stringWidth("Kepada:", "Helvetica", 10), T(39.4))
+    c.setFont("Helvetica-Oblique", 10)
+    c.drawString(X(LEFT), T(42.9), "To")
+    lines = _addr_lines(cl, r["up"])
+    for i, ys in enumerate((39.9, 44.4, 49.2, 53.9)):
+        c.setStrokeColor(colors.HexColor("#555555"))
+        c.setLineWidth(.4)
+        c.line(X(34.2), T(ys), X(117.5), T(ys))
+        if i < len(lines):
+            _fit(c, lines[i], X(35), T(ys - .8), "Helvetica-Bold" if i == 0 else "Helvetica", 9.5, 81 * mm)
+    c.setStrokeColor(colors.black)
+    # Tgl & Jam
+    _label(c, X(131), T(45.4), "Tgl.", "Date")
+    c.setLineWidth(.4)
+    c.line(X(139.8), T(46.2), X(180.2), T(46.2))
+    _fit(c, idn(r["tanggal"]), X(141), T(45.5), "Helvetica", 9.5, 38 * mm)
+    _label(c, X(131.3), T(56.1), "Jam", "Hour")
+    c.line(X(140), T(56.8), X(160), T(56.8))
+    c.setFont("Helvetica", 9.5)
+    c.drawString(X(141), T(56.0), r["jam"])
+    _label(c, X(LEFT), T(61.9), "Telah diterima/diserahkan:", "Received/delivered:")
+    # tabel
+    x0 = [LEFT]
+    for w in COLW:
+        x0.append(x0[-1] + w)
+    bottom = TOP_T + HEAD_H + sum(h for _, h in rows) / mm + pad * ROW_H
+    c.setLineWidth(1.5)
+    c.rect(X(LEFT), T(bottom), (RIGHT - LEFT) * mm, (bottom - TOP_T) * mm)
+    for xv in x0[1:-1]:
+        c.line(X(xv), T(TOP_T), X(xv), T(bottom))
+    y = TOP_T + HEAD_H
+    c.line(X(LEFT), T(y), X(RIGHT), T(y))
+    O, I = "Helvetica", "Helvetica-Oblique"
+    for i, parts in enumerate([[("No.", O)], [("Uraian/", O), ("Description", I)],
+                               [("Jumlah/", O), ("Qty", I)], [("Keterangan/", O), ("Remarks", I)]]):
+        _mix(c, parts, X((x0[i] + x0[i + 1]) / 2), T(TOP_T + 3.9), 9)
+    for cells, h in rows:
+        for i, p in enumerate(cells):
+            p.drawOn(c, X(x0[i]) + 1.5 * mm, T(y) - (h - p.height) / 2 - p.height)
+        y += h / mm
+        c.line(X(LEFT), T(y), X(RIGHT), T(y))
+    for _ in range(pad):
+        y += ROW_H
+        c.line(X(LEFT), T(y), X(RIGHT), T(y))
+    # tanda tangan
+    sh = max(0, bottom - 112.5)
+    _label(c, X(LEFT), T(117.8 + sh), "Diterima oleh:", "Received by")
+    _label(c, X(138.6), T(117.8 + sh), "Diserahkan oleh:", "Delivered by")
+    c.setLineWidth(.6)
+    c.line(X(20), T(142.3), X(59), T(142.3))
+    c.line(X(138), T(142.3), X(167.7), T(142.3))
+    if kurir:
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(X(152.85), T(145.8), kurir)
+    if r["catatan"]:
+        _fit(c, f"Catatan: {r['catatan']}", X(63), T(141.3), "Helvetica-Oblique", 7.5, 72 * mm)
+
+
+def _envelope(c, cl, up):
+    T = lambda m: PAGE[1] - m * mm
+    x = 35 * mm
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 12)
+    c.drawString(x, T(50), "Kepada Yth.")
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(x, T(60), cl["nama"])
+    y = 60
+    c.setFont("Helvetica", 12)
+    for k in ("alamat1", "alamat2", "alamat3", "alamat4"):
+        if cl[k]:
+            y += 6.5
+            c.drawString(x, T(y), cl[k])
+    if up:
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(x, T(y + 10), f"U.p. : {up}")
+
+
+def _items(raw):
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for it in data:
+        if isinstance(it, dict):
+            out.append({"Uraian": str(it.get("Uraian") or ""),
+                        "Jumlah": str(it.get("Jumlah") or ""),
+                        "Keterangan": str(it.get("Keterangan") or "")})
+    return out
+
+
+def _client_of(cid):
+    cl = D("clients")
+    hit = cl[cl.id == cid]
+    if hit.empty:
+        return pd.Series({k: "" for k in COLS["clients"]})
+    return hit.iloc[0]
+
+
+def make_pdf(r, cl, kurir, kop, items, mode="semua"):
+    """mode: 'tt' = tanda terima saja, 'amplop' = amplop saja, 'semua' = keduanya."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=PAGE)
+    if mode != "amplop":
+        pages = _paginate(_rows(items), (MAX_BOTTOM - TOP_T - HEAD_H) * mm) or [[]]
+        for i, rows in enumerate(pages, 1):
+            used, pad = sum(h for _, h in rows) / mm, 0
+            while len(rows) + pad < 7 and used + (pad + 1) * ROW_H <= 7 * ROW_H + .2:
+                pad += 1
+            _form(c, r, cl, kurir, kop, rows, pad, i, len(pages))
+            # showPage setelah halaman terakhir membuat halaman kosong. Jangan panggil bila ini halaman akhir.
+            if i < len(pages) or mode != "tt":
+                c.showPage()
+    if mode != "tt":
+        _envelope(c, cl, r["up"])
+    c.save()
+    return buf.getvalue()
+
+
+def pdf_for(rid, mode="semua"):
+    d = D("receipts")
+    hit = d[d.id == rid]
+    if hit.empty:
+        raise RuntimeError("Tanda terima tidak ditemukan.")
+    r = hit.iloc[0]
+    k = D("couriers")
+    k = k[k.id == r.courier_id]
+    return make_pdf(r, _client_of(r.client_id), k.nama.iloc[0] if len(k) else "",
+                    get_kop(), _items(r["items"]), mode)
+
+
+# ---------- Pratinjau & cetak ----------
+PRINT_HTML = """
+<style>
+ body{margin:0;font-family:"Source Sans Pro",system-ui,sans-serif}
+ button{padding:.45rem .9rem;margin-right:.4rem;border:1px solid #bbb;border-radius:.5rem;background:#fff;cursor:pointer;font-size:14px}
+ button.p{background:#ff4b4b;border-color:#ff4b4b;color:#fff}
+</style>
+<button class="p" id="p">🖨️ Cetak</button><button id="o">↗️ Buka di tab baru</button>
+<script>
+const bin=atob("__B64__"),arr=new Uint8Array(bin.length);
+for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+const url=URL.createObjectURL(new Blob([arr],{type:"application/pdf"}));
+document.getElementById("o").onclick=()=>window.open(url,"_blank");
+document.getElementById("p").onclick=()=>{
+  document.querySelectorAll("iframe").forEach(f=>f.remove());
+  const f=document.createElement("iframe");
+  f.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+  f.onload=()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){window.open(url,"_blank");}};
+  f.src=url;document.body.appendChild(f);
+};
+</script>"""
+
+
+def print_bar(pdf):
+    """Tombol cetak langsung (dialog cetak browser) + buka PDF di tab baru."""
+    html = PRINT_HTML.replace("__B64__", base64.b64encode(pdf).decode())
+    if hasattr(st, "iframe"):
+        st.iframe(html, height=46)
+    else:
+        import streamlit.components.v1 as comp
+        comp.html(html, height=46)
+
+
+@st.cache_data(show_spinner=False, max_entries=30)
+def render_pages(pdf, dpi=120):
+    if pymupdf is None:
+        return []
+    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+        return [p.get_pixmap(dpi=dpi).tobytes("png") for p in doc]
+
+
+def preview(pdf, mode):
+    imgs = render_pages(pdf)
+    if not imgs:
+        st.info("Pratinjau butuh paket `pymupdf` (lihat requirements.txt).")
+        return
+    forms = len(imgs) - (1 if mode == "semua" else 0)
+    labels = [] if mode == "amplop" else (["Tanda terima"] if forms == 1 else
+                                          [f"Tanda terima {i}/{forms}" for i in range(1, forms + 1)])
+    labels += ["Amplop"] if mode in ("amplop", "semua") else []
+    if len(imgs) == 1:
+        st.image(imgs[0], width=820)
+    else:
+        for tab, img in zip(st.tabs(labels), imgs):
+            tab.image(img, width=820)
+
+
+def show_receipt(rid, key):
+    opts = {"Tanda terima": "tt", "Amplop": "amplop", "Keduanya": "semua"}
+    pick = st.segmented_control("Yang dicetak / diunduh", list(opts), default="Tanda terima",
+                                key=f"mode_{key}") or "Tanda terima"
+    mode = opts[pick]
+    pdf = pdf_for(rid, mode)
+    d = D("receipts")
+    no = d.loc[d.id == rid, "nomor"].iloc[0]
+    a, b = st.columns([3, 2])
+    with a:
+        print_bar(pdf)
+    b.download_button("⬇️ Unduh PDF", pdf, f"{no}.pdf", "application/pdf", key=f"dl_{key}")
+    st.caption("Di dialog cetak: ukuran kertas **A5** (atau A4 dengan skala **100% / Actual size**, lalu potong "
+               "setengah), margin **None/Tanpa**. Jika dialog tidak muncul, pakai **Buka di tab baru** lalu Ctrl+P.")
+    preview(pdf, mode)
+
+
+def next_nomor(jenis, tahun):
+    d = D("receipts")
+    m = d[(d.jenis == jenis) & (d.tahun == tahun)].seq.max()
+    return f"{(int(m) + 1 if pd.notna(m) else 1):04d}-{jenis}"
+
+
+# ---------- Halaman ----------
+def page_buat():
+    st.header("Buat tanda terima")
+    if "last" in st.session_state:
+        d = D("receipts")
+        m = d[d.id == st.session_state["last"]]
+        if m.empty:
+            st.session_state.pop("last")
+        else:
+            with st.container(border=True):
+                st.success(f"Tanda terima **{m.nomor.iloc[0]}** tersimpan. Siap dicetak:")
+                show_receipt(int(m.id.iloc[0]), "last")
+                if st.button("✖ Tutup & buat baru"):
+                    st.session_state.pop("last")
+                    st.rerun()
+    cl = D("clients").sort_values("nama")
+    cr = D("couriers")
+    cr = cr[cr.aktif == 1]
+    if cl.empty or cr.empty:
+        st.info("Isi dulu menu **Klien & Pengantar** (atau pakai data contoh di **Pengaturan**).")
+        return
+    now = datetime.now(WIB)
+    n = st.session_state.get("n", 0)
+    st.session_state.setdefault("b_tgl", now.date())
+    st.session_state.setdefault("b_jam", now.time().replace(second=0, microsecond=0))
+    a, b, c3, d = st.columns(4)
+    jenis = a.selectbox("Jenis", list(JENIS), format_func=lambda k: f"{k} – {JENIS[k]}")
+    tgl = b.date_input("Tanggal", key="b_tgl")
+    jam = c3.time_input("Jam", key="b_jam")
+    kur = d.selectbox("Pengantar", cr.id.tolist(), format_func=lambda i: cr.set_index("id").nama[i])
+    nm = cl.set_index("id").nama
+    cid = st.selectbox("Kepada", cl.id.tolist(), format_func=lambda i: nm[i])
+    row = cl[cl.id == cid].iloc[0]
+    st.caption(" · ".join(x for x in [row.alamat1, row.alamat2, row.alamat3, row.alamat4] if x))
+    kontak = [x.strip() for x in str(row.kontak or "").split("\n") if x.strip()]
+    if kontak:
+        up = st.selectbox("U.p. (pilih atau ketik baru)", kontak, index=0, accept_new_options=True)
+    else:
+        up = st.text_input("U.p. (opsional)")
+    st.write("**Daftar dokumen**")
+    items = st.data_editor(pd.DataFrame([{"Uraian": "", "Jumlah": "1 asli", "Keterangan": ""}]),
+                           num_rows="dynamic", width="stretch", key=f"items{n}")
+    catatan = st.text_input("Catatan (opsional)")
+    its = [r for r in items.fillna("").to_dict("records") if str(r["Uraian"]).strip()]
+
+    st.subheader("Pratinjau")
+    rprev = dict(nomor=next_nomor(jenis, tgl.year), tanggal=tgl.isoformat(), jam=jam.strftime("%H:%M"),
+                 up=up or "", catatan=catatan)
+    preview(make_pdf(rprev, row, cr.set_index("id").nama[kur], get_kop(), its, "tt"), "tt")
+    st.caption("Nomor final ditetapkan saat disimpan. Tombol cetak muncul setelah disimpan.")
+    if st.button("💾 Simpan", type="primary"):
+        if not its:
+            st.error("Isi minimal satu baris dokumen.")
+        else:
+            rid = save_receipt(dict(jenis=jenis, tahun=tgl.year, tanggal=tgl.isoformat(), jam=jam.strftime("%H:%M"),
+                                    client_id=int(cid), up=up or "", courier_id=int(kur), status="Draft",
+                                    catatan=catatan, items=json.dumps(its, ensure_ascii=False),
+                                    created_at=now.isoformat(timespec="seconds")))
+            st.session_state["last"] = rid
+            st.session_state["n"] = n + 1
+            st.rerun()
+
+
+def page_riwayat():
+    st.header("Riwayat")
+    df = load_receipts()
+    if df.empty:
+        st.info("Belum ada tanda terima.")
+        return
+    a, b, c3 = st.columns([2, 1, 1])
+    s = a.text_input("Cari (klien / nomor / isi dokumen)")
+    jf = b.multiselect("Jenis", list(JENIS))
+    sf = c3.multiselect("Status", STATUS)
+    v = df.sort_values(["tahun", "seq"], ascending=False)
+    if s:
+        hay = (v.klien.fillna("") + v.nomor + v["items"]).str.lower()
+        v = v[hay.str.contains(s.lower(), regex=False)]
+    if jf:
+        v = v[v.jenis.isin(jf)]
+    if sf:
+        v = v[v.status.isin(sf)]
+    st.dataframe(v[["nomor", "jenis", "tanggal", "jam", "klien", "pengantar", "status"]],
+                 hide_index=True, width="stretch")
+    if v.empty:
+        return
+    st.divider()
+    lab = {r.id: f"{r.nomor} · {r.tanggal} · {r.klien}" for r in v.itertuples()}
+    rid = st.selectbox("Pilih tanda terima", list(lab), format_func=lab.get)
+    r = v[v.id == rid].iloc[0]
+    a, b = st.columns(2)
+    ns = a.selectbox("Status", STATUS, index=STATUS.index(r.status) if r.status in STATUS else 0)
+    if a.button("Perbarui status"):
+        W("update", "receipts", int(rid), {"status": ns})
+        st.rerun()
+    if b.checkbox("Izinkan hapus") and b.button("🗑️ Hapus"):
+        W("delete", "receipts", int(rid))
+        st.rerun()
+    show_receipt(int(rid), f"h{rid}")
+
+
+def page_dasbor():
+    st.header("Dasbor")
+    df = load_receipts()
+    if df.empty:
+        st.info("Belum ada data.")
+        return
+    hari = st.number_input("Dianggap 'belum kembali' setelah (hari)", 1, 90, 7)
+    cutoff = (datetime.now(WIB).date() - timedelta(days=hari)).isoformat()
+    over = df[(df.status == "Diserahkan") & (df.tanggal < cutoff)]
+    bulan = datetime.now(WIB).strftime("%Y-%m")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total tanda terima", len(df))
+    m2.metric("Bulan ini", int((df.tanggal.str[:7] == bulan).sum()))
+    m3.metric("Belum kembali", len(over))
+    st.subheader("Per bulan")
+    st.bar_chart(df.assign(bulan=df.tanggal.str[:7]).groupby(["bulan", "jenis"]).size().unstack(fill_value=0))
+    st.subheader("Per pengantar")
+    st.bar_chart(df.pengantar.fillna("-").value_counts())
+    if not over.empty:
+        st.subheader("⚠️ Belum kembali")
+        st.dataframe(over[["nomor", "tanggal", "klien", "pengantar"]], hide_index=True, width="stretch")
+
+
+def page_master():
+    st.header("Klien & Pengantar")
+    st.subheader("Klien")
+    st.caption("Kolom *kontak*: satu nama (U.p.) per baris. Hapus baris dengan memilihnya lalu tekan Delete.")
+    ed = st.data_editor(D("clients").sort_values("nama"), num_rows="dynamic", width="stretch", hide_index=True,
+                        key="ce", disabled=["id"],
+                        column_config={"kontak": st.column_config.TextColumn(width="large")})
+    if st.button("Simpan klien"):
+        sync("clients", ed, ["nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
+             "client_id", "Klien")
+        st.rerun()
+    st.subheader("Pengantar")
+    kdf = D("couriers").sort_values("nama")
+    kdf["aktif"] = kdf["aktif"].astype(bool)
+    ek = st.data_editor(kdf, num_rows="dynamic", width="stretch", hide_index=True, key="ke",
+                        disabled=["id"], column_config={"aktif": st.column_config.CheckboxColumn()})
+    if st.button("Simpan pengantar"):
+        sync("couriers", ek.fillna({"aktif": True}), ["nama", "aktif"], "courier_id", "Pengantar")
+        st.rerun()
+
+
+def page_setelan():
+    st.header("Pengaturan")
+    if isinstance(store, SheetsStore):
+        st.success("Penyimpanan: **Google Sheets** (data tetap).")
+        st.link_button("Buka Google Sheet", store.sh.url)
+    else:
+        st.warning("Penyimpanan: **SQLite sementara** — data hilang saat aplikasi restart di Streamlit Cloud. "
+                   "Isi `gsheet_id` dan `[gcp_service_account]` di Secrets untuk memakai Google Sheets.")
+    st.subheader("Kop surat")
+    kop = get_kop()
+    nama = st.text_input("Nama KJPP", kop["nama"])
+    kiri = st.text_area("Blok kiri (di bawah nama)", kop["kiri"], height=110)
+    kanan = st.text_area("Blok kanan (alamat cabang)", kop["kanan"], height=130)
+    if st.button("Simpan kop"):
+        have = set(D("settings", True).k)
+        for k, v in dict(nama=nama, kiri=kiri, kanan=kanan).items():
+            W("update", "settings", k, {"v": v}) if k in have else W("insert", "settings", {"k": k, "v": v})
+        st.success("Tersimpan.")
+    st.subheader("Cadangan data")
+    data = {t: D(t, True).to_dict("records") for t in COLS}
+    st.download_button("⬇️ Unduh cadangan (JSON)", json.dumps(data, ensure_ascii=False, default=str, indent=1),
+                       f"cadangan-tanda-terima-{datetime.now(WIB):%Y%m%d}.json", "application/json")
+    up = st.file_uploader("Pulihkan dari cadangan (menimpa semua data)", type="json")
+    if up and st.button("Pulihkan sekarang"):
+        d = json.load(up)
+        for t in COLS:
+            W("replace", t, d.get(t, []))
+        st.success("Data dipulihkan.")
+    st.subheader("Data contoh")
+    if st.button("Isi data contoh (fiktif)"):
+        ada_klien = set(D("clients", True).nama)
+        if "PT CONTOH ABADI Tbk" not in ada_klien:
+            W("insert", "clients", dict(nama="PT CONTOH ABADI Tbk", kode="CABD", alamat1="Menara Contoh Lt. 10",
+                                        alamat2="Jl. Jenderal Sudirman Kav. 1", alamat3="Jakarta 10220", alamat4="",
+                                        kontak="Bpk. Budi\nIbu Sari"))
+        ada_kurir = set(D("couriers", True).nama)
+        for n in ("Pengantar A", "Pengantar B"):
+            if n not in ada_kurir:
+                W("insert", "couriers", {"nama": n, "aktif": 1})
+        st.success("Data contoh ditambahkan bila belum ada.")
+
+
+# ---------- Main ----------
+pw = secret("app_password")
+if pw and not st.session_state.get("ok"):
+    st.title("Tanda Terima")
+    sandi = st.text_input("Kata sandi", type="password")
+    if sandi and sandi != pw:
+        st.error("Kata sandi salah.")
+    if sandi == pw:
+        st.session_state["ok"] = True
+        st.rerun()
+    st.stop()
+
+PAGES = {"🧾 Buat": page_buat, "📋 Riwayat": page_riwayat, "📊 Dasbor": page_dasbor,
+         "👥 Klien & Pengantar": page_master, "⚙️ Pengaturan": page_setelan}
+st.sidebar.title("Tanda Terima")
+PAGES[st.sidebar.radio("Menu", list(PAGES), label_visibility="collapsed")]()
