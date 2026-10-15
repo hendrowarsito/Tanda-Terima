@@ -29,7 +29,7 @@ BLN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus"
 KOP = {"nama": "SUWENDHO RINALDY DAN REKAN",
        "kiri": "KANTOR JASA PENILAI PUBLIK\nNomor Izin Usaha KJPP: 2.09.0059\nNomor Izin Cabang KJPP: 1138/KM.1/2017\nPenilai Properti dan Bisnis",
        "kanan": "Kantor Cabang Jakarta\nKomplek Kalibata Indah Blok K16-17\nJl. Rawajati Timur, Pancoran\nJakarta Selatan 12750\nT (021) 7970913 / 799-4521\nE ocky@srrkjpp.com\nWilayah Kerja: Seluruh Indonesia\nKantor Cabang: Jakarta (P/B), Bandung (P)"}
-COLS = {"clients": ["id", "nama_klien", "alamat1", "alamat2", "alamat3", "alamat4", "kode_pos", "kontak"],
+COLS = {"clients": ["id", "nama", "alamat1", "alamat2", "alamat3", "alamat4", "kode_pos", "kontak"],
         "couriers": ["id", "nama", "aktif"],
         "receipts": ["id", "jenis", "tahun", "seq", "nomor", "tanggal", "jam", "client_id", "up",
                      "courier_id", "status", "catatan", "items", "created_at", "penerima", "tgl_terima", "jam_terima"],
