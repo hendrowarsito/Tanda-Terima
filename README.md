@@ -37,11 +37,12 @@ Jangan ubah nama tab atau urutan/judul kolom. Mengedit isi sel manual boleh, tap
 
 ## Pratinjau & cetak
 - **Buat:** pratinjau tampil langsung di bawah formulir dan ikut berubah saat Anda mengisi. Nomor final baru
-  ditetapkan saat **Simpan**; setelah itu muncul blok cetak.
-- **Riwayat:** pilih tanda terima, lalu pratinjau dan tombol cetak muncul di bawahnya.
-- Pilih yang dicetak: **Tanda terima / Amplop / Keduanya**.
-- **🖨️ Cetak** membuka dialog cetak browser. Atur ukuran kertas **A5** (atau A4 dengan skala 100% / Actual size,
-  lalu potong setengah) dan margin None. Jika dialog tidak muncul (mis. Safari/HP), pakai **Buka di tab baru** lalu Ctrl+P.
+  ditetapkan saat **Simpan**; setelah itu muncul blok cetak. **Riwayat:** pilih tanda terima untuk pratinjau dan cetak ulang.
+- Pilih yang dicetak (**Tanda terima / Amplop / Keduanya**) dan kertasnya (**A4 setengah atas** atau **A5 landscape**).
+- **🖨️ Cetak** membuka jendela baru berisi halaman siap cetak, lalu memanggil dialog cetak. Jika dialog tidak muncul
+  sendiri, tekan tombol Cetak di bagian atas jendela itu. Izinkan pop-up untuk situs ini bila diminta.
+- Di dialog cetak: skala **100%**, matikan *header & footer*. Pada A4 formulir tercetak di setengah atas.
+- Cadangan: **📄 Buka PDF** lalu Cmd/Ctrl+P, atau **Unduh PDF**.
 
 ## Batasan
 - Kuota Google API ±60 pembacaan/menit per pengguna; aplikasi men-cache data 20 detik, cukup untuk beberapa pengguna.
