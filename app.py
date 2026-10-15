@@ -718,21 +718,21 @@ def _envelope(c, cl, up, cut=False):
         c.setDash()
     c.setStrokeColor(colors.black)
     c.setLineWidth(1.2)
-    c.rect(X(12), T(288), 186 * mm, 132 * mm)  # bingkai amplop
+    c.rect(X(12), T(288), 100 * mm, 70 * mm)  # bingkai amplop
     x, maxw = 30, 150 * mm
     c.setFont("Helvetica", 13)
     c.drawString(X(x), T(186), "Kepada Yth.")
-    _fit(c, cl["nama"], X(x), T(197), "Helvetica-Bold", 16, maxw)
+    _fit(c, cl["nama"], X(x), T(197), "Helvetica-Bold", 12, maxw)
     y = 197
     addr = [cl[k] for k in ("alamat1", "alamat2", "alamat3", "alamat4") if cl[k]]
     for i, ln in enumerate(addr):
         y += 8
-        w = _fit(c, ln, X(x), T(y), "Helvetica", 13, maxw)
+        w = _fit(c, ln, X(x), T(y), "Helvetica", 10, maxw)
         if i == len(addr) - 1:  # underline hanya baris alamat terakhir
             c.setLineWidth(.8)
             c.line(X(x), T(y + 1.6), X(x) + w, T(y + 1.6))
     if up:
-        _fit(c, f"U.p. : {up}", X(x), T(y + 14), "Helvetica-Bold", 13, maxw)
+        _fit(c, f"U.p. : {up}", X(x), T(y + 14), "Helvetica-Bold", 10, maxw)
 
 
 def make_pdf(r, cl, kurir, kop, items, mode="semua"):
