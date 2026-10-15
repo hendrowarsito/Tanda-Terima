@@ -29,7 +29,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 
 # 2. Gabungkan lokasi direktori dengan nama file font Anda
 # (Pastikan "TwCenMT.ttf" sama persis huruf besar/kecilnya dengan file Anda!)
-font_path = os.path.join(current_dir, "TwCenMT.ttf") 
+font_path = os.path.join(current_dir, "TCCEB.TTF") 
 
 # 3. Daftarkan font menggunakan path absolut
 pdfmetrics.registerFont(TTFont("Tw Cen MT", font_path))
