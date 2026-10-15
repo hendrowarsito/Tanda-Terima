@@ -20,11 +20,19 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import Paragraph
 
+import os
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# 1. Daftarkan file font ke ReportLab (pastikan nama file .ttf sesuai dengan yang Anda unggah)
-pdfmetrics.registerFont(TTFont("Tw Cen MT", "TwCenMT.ttf"))
+# 1. Dapatkan lokasi direktori tempat file app.py ini berada
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# 2. Gabungkan lokasi direktori dengan nama file font Anda
+# (Pastikan "TwCenMT.ttf" sama persis huruf besar/kecilnya dengan file Anda!)
+font_path = os.path.join(current_dir, "TwCenMT.ttf") 
+
+# 3. Daftarkan font menggunakan path absolut
+pdfmetrics.registerFont(TTFont("Tw Cen MT", font_path))
 
 st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
 WIB = ZoneInfo("Asia/Jakarta")
