@@ -35,14 +35,25 @@ Pada `private_key`, biarkan `\n` apa adanya (jangan diganti baris baru) dan teta
 Saat pertama dibuka, aplikasi membuat empat tab sendiri di Sheet: `clients`, `couriers`, `receipts`, `settings`.
 Jangan ubah nama tab atau urutan/judul kolom. Mengedit isi sel manual boleh, tapi kolom `id` jangan diubah.
 
-## Pratinjau & cetak
-- **Buat:** pratinjau tampil langsung di bawah formulir dan ikut berubah saat Anda mengisi. Nomor final baru
-  ditetapkan saat **Simpan**; setelah itu muncul blok cetak. **Riwayat:** pilih tanda terima untuk pratinjau dan cetak ulang.
-- Pilih yang dicetak (**Tanda terima / Amplop / Keduanya**) dan kertasnya (**A4 setengah atas** atau **A5 landscape**).
-- **🖨️ Cetak** membuka jendela baru berisi halaman siap cetak, lalu memanggil dialog cetak. Jika dialog tidak muncul
-  sendiri, tekan tombol Cetak di bagian atas jendela itu. Izinkan pop-up untuk situs ini bila diminta.
-- Di dialog cetak: skala **100%**, matikan *header & footer*. Pada A4 formulir tercetak di setengah atas.
+## Pratinjau & cetak (kertas A4)
+- Satu lembar **A4**: **setengah atas = tanda terima**, **setengah bawah = amplop** berbingkai (garis putus-putus = tempat memotong).
+  Pratinjau di aplikasi menampilkan lembar A4 utuh, persis seperti yang tercetak.
+- **Buat:** pratinjau ikut berubah saat Anda mengisi; nomor final ditetapkan saat **Simpan**, lalu muncul blok cetak.
+  **Riwayat:** pilih tanda terima untuk pratinjau dan cetak ulang.
+- Pilih yang dicetak: **Tanda terima + amplop**, **Tanda terima saja**, atau **Amplop saja**. Posisinya tetap, sehingga separuh
+  kertas yang masih kosong bisa dipakai lagi untuk cetakan berikutnya.
+- Bila daftar dokumen panjang, tanda terima berlanjut ke lembar berikutnya (amplop hanya di lembar pertama).
+- **🖨️ Cetak** membuka jendela baru berisi halaman siap cetak lalu memanggil dialog cetak (izinkan pop-up). Jika dialog tidak muncul,
+  tekan tombol Cetak di jendela itu. Di dialog: ukuran **A4**, skala **100%**, matikan *header & footer*.
 - Cadangan: **📄 Buka PDF** lalu Cmd/Ctrl+P, atau **Unduh PDF**.
+
+## Status "Diterima"
+Di **Riwayat**, memilih status **Diterima** memunculkan isian **Penerima** (wajib), **Tanggal**, dan **Jam diterima**.
+Datanya tersimpan, tampil di tabel riwayat, dan tercetak di bawah kolom *Diterima oleh*.
+Database lama (SQLite maupun Google Sheets) otomatis ditambah tiga kolom baru saat aplikasi dibuka; data lama tidak berubah.
+
+## Logo
+Logo KJPP sudah tertanam di `app.py`. Untuk menggantinya, simpan file `logo.png` di folder yang sama dengan `app.py`.
 
 ## Batasan
 - Kuota Google API ±60 pembacaan/menit per pengguna; aplikasi men-cache data 20 detik, cukup untuk beberapa pengguna.
