@@ -532,7 +532,7 @@ WgfKAyhoR6AsR15DCHgxoF2AckZg8j5A0Df1CSj5zEPQdxVugZqOBPGqQC8QNcmTDxUYMPAE7WShkm74
 def _logo():
     src = str(LOGO_FILE) if LOGO_FILE.exists() else io.BytesIO(base64.b64decode("".join(LOGO_B64.split())))
     return ImageReader(src)
-_S_NAMA = 46.7 * mm / stringWidth(KOP["nama"], "Tw Cen MT", 9) * 100
+_S_NAMA = 46.7 * mm / stringWidth(KOP["nama"], "Tw Cen MT", 5) * 100
 _S_BODY = 50.5 * mm / stringWidth("Nomor Izin Cabang KJPP: 1138/KM.1/2017", "Tw Cen MT", 9) * 100
 
 
