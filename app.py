@@ -856,20 +856,6 @@ def next_nomor(jenis, tahun):
 
 # ---------- Halaman ----------
 def page_buat():
-    st.header("Buat tanda terima")
-    if "last" in st.session_state:
-        d = D("receipts")
-        m = d[d.id == st.session_state["last"]]
-        if m.empty:
-            st.session_state.pop("last")
-        else:
-            with st.container(border=True):
-                st.success(f"Tanda terima **{m.nomor.iloc[0]}** tersimpan. Siap dicetak:")
-                show_receipt(int(m.id.iloc[0]), "last")
-                if st.button("✖ Tutup & buat baru"):
-                    st.session_state.pop("last")
-                    st.rerun()
-
     # Pastikan DataFrame clients tidak kosong dan mempunyai kolom 'nama' sebelum sort
     cl = D("clients")
     if "nama" in cl.columns and not cl.empty:
@@ -925,6 +911,20 @@ def page_buat():
             st.session_state["last"] = rid
             st.session_state["n"] = n + 1
             st.rerun()
+    
+    st.header("Buat tanda terima")
+    if "last" in st.session_state:
+        d = D("receipts")
+        m = d[d.id == st.session_state["last"]]
+        if m.empty:
+            st.session_state.pop("last")
+        else:
+            with st.container(border=True):
+                st.success(f"Tanda terima **{m.nomor.iloc[0]}** tersimpan. Siap dicetak:")
+                show_receipt(int(m.id.iloc[0]), "last")
+                if st.button("✖ Tutup & buat baru"):
+                    st.session_state.pop("last")
+                    st.rerun()
 
 
 def _parse_d(x, default):
