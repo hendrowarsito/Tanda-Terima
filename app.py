@@ -718,7 +718,7 @@ def _envelope(c, cl, up, cut=False):
         c.setDash()
     c.setStrokeColor(colors.black)
     c.setLineWidth(1.2)
-    c.rect(X(14), T(250), 100 * mm, 70 * mm)  # bingkai amplop
+    c.rect(X(15), T(245), 100 * mm, 70 * mm)  # bingkai amplop
     x, maxw = 30, 150 * mm
     c.setFont("Helvetica", 13)
     c.drawString(X(x), T(186), "Kepada Yth.")
