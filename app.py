@@ -22,7 +22,7 @@ from reportlab.platypus import Paragraph
 
 st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
 WIB = ZoneInfo("Asia/Jakarta")
-JENIS = {"PR": "Proposal", "INV": "Invoice", "KW": "Kwitansi", "LP": "Laporan", "": "Umum"}
+JENIS = {"PR": "Proposal", "INV": "Invoice", "KW": "Kwitansi", "LP": "Laporan", "UM": "Umum"}
 STATUS = ["Draft", "Diserahkan", "Diterima", "Arsip"]
 BLN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus",
        "September", "Oktober", "November", "Desember"]
