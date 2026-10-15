@@ -990,30 +990,6 @@ def page_riwayat():
         st.rerun()
     show_receipt(int(rid), f"h{rid}")
 
-
-def page_dasbor():
-    st.header("Dasbor")
-    df = load_receipts()
-    if df.empty:
-        st.info("Belum ada data.")
-        return
-    hari = st.number_input("Dianggap 'belum kembali' setelah (hari)", 1, 90, 7)
-    cutoff = (datetime.now(WIB).date() - timedelta(days=hari)).isoformat()
-    over = df[(df.status == "Diserahkan") & (df.tanggal < cutoff)]
-    bulan = datetime.now(WIB).strftime("%Y-%m")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total tanda terima", len(df))
-    m2.metric("Bulan ini", int((df.tanggal.str[:7] == bulan).sum()))
-    m3.metric("Belum kembali", len(over))
-    st.subheader("Per bulan")
-    st.bar_chart(df.assign(bulan=df.tanggal.str[:7]).groupby(["bulan", "jenis"]).size().unstack(fill_value=0))
-    st.subheader("Per pengantar")
-    st.bar_chart(df.pengantar.fillna("-").value_counts())
-    if not over.empty:
-        st.subheader("⚠️ Belum kembali")
-        st.dataframe(over[["nomor", "tanggal", "klien", "pengantar"]], hide_index=True, width="stretch")
-
-
 def page_master():
     st.header("Klien & Pengantar")
     st.subheader("Klien")
@@ -1119,7 +1095,7 @@ if pw and not st.session_state.get("ok"):
         st.rerun()
     st.stop()
 
-PAGES = {"🧾 Buat": page_buat, "📋 Riwayat": page_riwayat, "📊 Dasbor": page_dasbor,
+PAGES = {"🧾 Buat": page_buat, "📋 Riwayat": page_riwayat,
          "👥 Klien & Pengantar": page_master, "⚙️ Pengaturan": page_setelan}
 st.sidebar.title("Tanda Terima")
 PAGES[st.sidebar.radio("Menu", list(PAGES), label_visibility="collapsed")]()
