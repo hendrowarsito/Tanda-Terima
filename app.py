@@ -54,6 +54,14 @@ def clean(v):
 
 
 def cast(d, t):
+    if not isinstance(d, pd.DataFrame):
+        d = pd.DataFrame(columns=COLS[t])
+    
+    # Pastikan semua kolum mengikut skema COLS[t] wujud
+    for c in COLS[t]:
+        if c not in d.columns:
+            d[c] = ""
+            
     d = d.reindex(columns=COLS[t]).fillna("")
     for c in COLS[t]:
         if c in INTS:
@@ -61,7 +69,7 @@ def cast(d, t):
         else:
             d[c] = d[c].astype(str)
     return d.reset_index(drop=True)
-
+    
 
 class SqliteStore:
     def __init__(self, path):
@@ -237,9 +245,26 @@ def sync(t, df, cols, ref_col, label):
 
 
 def load_receipts():
-    c = D("clients")[["id", "nama"]].rename(columns={"id": "client_id", "nama": "klien"})
-    k = D("couriers")[["id", "nama"]].rename(columns={"id": "courier_id", "nama": "pengantar"})
-    return D("receipts").merge(c, on="client_id", how="left").merge(k, on="courier_id", how="left")
+    clients_df = D("clients")
+    if "id" in clients_df.columns and "nama" in clients_df.columns:
+        c = clients_df[["id", "nama"]].rename(columns={"id": "client_id", "nama": "klien"})
+    else:
+        c = pd.DataFrame(columns=["client_id", "klien"])
+
+    couriers_df = D("couriers")
+    if "id" in couriers_df.columns and "nama" in couriers_df.columns:
+        k = couriers_df[["id", "nama"]].rename(columns={"id": "courier_id", "nama": "pengantar"})
+    else:
+        k = pd.DataFrame(columns=["courier_id", "pengantar"])
+
+    receipts_df = D("receipts")
+    if receipts_df.empty or "client_id" not in receipts_df.columns:
+        return pd.DataFrame(columns=["id", "jenis", "tahun", "seq", "nomor", "tanggal", 
+                                     "jam", "client_id", "up", "courier_id", "status", 
+                                     "catatan", "items", "created_at", "klien", "pengantar"])
+
+    return receipts_df.merge(c, on="client_id", how="left").merge(k, on="courier_id", how="left")
+
 
 
 # ---------- PDF: setengah A4 (A5 landscape), meniru formulir OmniForm ----------
