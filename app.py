@@ -222,19 +222,32 @@ def save_receipt(data):
 def sync(t, df, cols, ref_col, label):
     """Simpan hasil st.data_editor: tambah / ubah (hanya yang berubah) / hapus (diblokir bila sudah dipakai)."""
     cur = D(t, True).set_index("id")
-    used = set(D("receipts", True)[ref_col])
+    used = set(D("receipts", True)[ref_col]) if ref_col in D("receipts", True).columns else set()
     keep = set()
+
     for _, r in df.iterrows():
-        vals = {k: clean(r[k]) for k in cols}
-        if not str(vals[cols[0]]).strip():
+        # Menggunakan r.get(k, "") agar tidak memicu KeyError jika kolom tidak ditemukan
+        vals = {k: clean(r.get(k, "")) for k in cols}
+        
+        # Jika kolom utama (misal 'nama') kosong, abaikan baris ini
+        if not str(vals.get(cols[0], "")).strip():
             continue
-        if pd.isna(r["id"]):
+
+        # Cek apakah ini baris baru (id kosong/NaN)
+        row_id = r.get("id", None)
+        if pd.isna(row_id) or row_id == "" or str(row_id).strip() == "":
             W("insert", t, vals)
             continue
-        i = int(r["id"])
+
+        i = int(row_id)
         keep.add(i)
-        if i in cur.index and any(str(cur.at[i, k]) != str(vals[k]) for k in cols):
-            W("update", t, i, vals)
+        
+        # Perbarui jika ada perubahan data
+        if i in cur.index:
+            if any(str(cur.at[i, k]) != str(vals[k]) for k in cols if k in cur.columns):
+                W("update", t, i, vals)
+
+    # Hapus data yang dihapus dari editor (kecuali jika sudah pernah dipakai di tanda terima)
     for i in cur.index:
         if i in keep:
             continue
@@ -1007,29 +1020,55 @@ def page_master():
     st.caption("Kolom *kontak*: satu nama (U.p.) per baris. Hapus baris dengan memilihnya lalu tekan Delete.")
     
     clients_df = D("clients")
+    # Pastikan semua kolom terdefinisi
+    for c in COLS["clients"]:
+        if c not in clients_df.columns:
+            clients_df[c] = ""
+
     if "nama" in clients_df.columns and not clients_df.empty:
         clients_df = clients_df.sort_values("nama")
+
+    ed = st.data_editor(
+        clients_df,
+        num_rows="dynamic",
+        width="stretch",
+        hide_index=True,
+        key="ce",
+        disabled=["id"],
+        column_config={"kontak": st.column_config.TextColumn(width="large")}
+    )
     
-    ed = st.data_editor(clients_df, num_rows="dynamic", width="stretch", hide_index=True,
-                        key="ce", disabled=["id"],
-                        column_config={"kontak": st.column_config.TextColumn(width="large")})
     if st.button("Simpan klien"):
         sync("clients", ed, ["nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
              "client_id", "Klien")
+        st.success("Data klien berhasil disimpan!")
         st.rerun()
 
     st.subheader("Pengantar")
     kdf = D("couriers")
+    for c in COLS["couriers"]:
+        if c not in kdf.columns:
+            kdf[c] = ""
+
     if "nama" in kdf.columns and not kdf.empty:
         kdf = kdf.sort_values("nama")
     
     if "aktif" in kdf.columns:
         kdf["aktif"] = kdf["aktif"].astype(bool)
-        
-    ek = st.data_editor(kdf, num_rows="dynamic", width="stretch", hide_index=True, key="ke",
-                        disabled=["id"], column_config={"aktif": st.column_config.CheckboxColumn()})
+
+    ek = st.data_editor(
+        kdf,
+        num_rows="dynamic",
+        width="stretch",
+        hide_index=True,
+        key="ke",
+        disabled=["id"],
+        column_config={"aktif": st.column_config.CheckboxColumn()}
+    )
+    
     if st.button("Simpan pengantar"):
         sync("couriers", ek.fillna({"aktif": True}), ["nama", "aktif"], "courier_id", "Pengantar")
+        st.success("Data pengantar berhasil disimpan!")
         st.rerun()
 
 
