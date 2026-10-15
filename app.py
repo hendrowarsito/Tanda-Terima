@@ -532,7 +532,7 @@ WgfKAyhoR6AsR15DCHgxoF2AckZg8j5A0Df1CSj5zEPQdxVugZqOBPGqQC8QNcmTDxUYMPAE7WShkm74
 def _logo():
     src = str(LOGO_FILE) if LOGO_FILE.exists() else io.BytesIO(base64.b64decode("".join(LOGO_B64.split())))
     return ImageReader(src)
-_S_NAMA = 46.7 * mm / stringWidth(KOP["nama"], "Tw Cen MT", 5) * 100
+_S_NAMA = 46.7 * mm / stringWidth(KOP["nama"], "Tw Cen MT", 12.5) * 100
 _S_BODY = 50.5 * mm / stringWidth("Nomor Izin Cabang KJPP: 1138/KM.1/2017", "Tw Cen MT", 9) * 100
 
 
@@ -540,7 +540,7 @@ def _cond(c, txt, x, y, size, scale, maxw):
     """Teks 'condensed' (diperlebar-sempit horizontal) seperti kop aslinya."""
     sc = min(scale, maxw / max(stringWidth(txt, "Tw Cen MT", size), 1) * 100)
     t = c.beginText(x, y)
-    t.setFont("Helvetica", size)
+    t.setFont("Tw Cen MT", size)
     t.setHorizScale(sc)
     t.textOut(txt)
     t.setHorizScale(100)  # kembalikan agar teks berikutnya normal
