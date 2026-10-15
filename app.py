@@ -57,7 +57,7 @@ def cast(d, t):
     if not isinstance(d, pd.DataFrame):
         d = pd.DataFrame(columns=COLS[t])
     
-    # Pastikan semua kolum mengikut skema COLS[t] wujud
+    # Pastikan semua kolom mengikut skema COLS[t] wujud dalam DataFrame
     for c in COLS[t]:
         if c not in d.columns:
             d[c] = ""
@@ -856,12 +856,24 @@ def page_buat():
                 if st.button("✖ Tutup & buat baru"):
                     st.session_state.pop("last")
                     st.rerun()
-    cl = D("clients").sort_values("nama")
+
+    # Pastikan DataFrame clients tidak kosong dan mempunyai kolom 'nama' sebelum sort
+    cl = D("clients")
+    if "nama" in cl.columns and not cl.empty:
+        cl = cl.sort_values("nama")
+    else:
+        cl = pd.DataFrame(columns=COLS["clients"])
+
     cr = D("couriers")
-    cr = cr[cr.aktif == 1]
+    if "aktif" in cr.columns:
+        cr = cr[cr.aktif == 1]
+    else:
+        cr = pd.DataFrame(columns=COLS["couriers"])
+
     if cl.empty or cr.empty:
         st.info("Isi dulu menu **Klien & Pengantar** (atau pakai data contoh di **Pengaturan**).")
         return
+        
     now = datetime.now(WIB)
     n = st.session_state.get("n", 0)
     st.session_state.setdefault("b_tgl", now.date())
@@ -993,16 +1005,27 @@ def page_master():
     st.header("Klien & Pengantar")
     st.subheader("Klien")
     st.caption("Kolom *kontak*: satu nama (U.p.) per baris. Hapus baris dengan memilihnya lalu tekan Delete.")
-    ed = st.data_editor(D("clients").sort_values("nama"), num_rows="dynamic", width="stretch", hide_index=True,
+    
+    clients_df = D("clients")
+    if "nama" in clients_df.columns and not clients_df.empty:
+        clients_df = clients_df.sort_values("nama")
+    
+    ed = st.data_editor(clients_df, num_rows="dynamic", width="stretch", hide_index=True,
                         key="ce", disabled=["id"],
                         column_config={"kontak": st.column_config.TextColumn(width="large")})
     if st.button("Simpan klien"):
         sync("clients", ed, ["nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
              "client_id", "Klien")
         st.rerun()
+
     st.subheader("Pengantar")
-    kdf = D("couriers").sort_values("nama")
-    kdf["aktif"] = kdf["aktif"].astype(bool)
+    kdf = D("couriers")
+    if "nama" in kdf.columns and not kdf.empty:
+        kdf = kdf.sort_values("nama")
+    
+    if "aktif" in kdf.columns:
+        kdf["aktif"] = kdf["aktif"].astype(bool)
+        
     ek = st.data_editor(kdf, num_rows="dynamic", width="stretch", hide_index=True, key="ke",
                         disabled=["id"], column_config={"aktif": st.column_config.CheckboxColumn()})
     if st.button("Simpan pengantar"):
