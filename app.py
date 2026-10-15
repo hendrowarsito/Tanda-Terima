@@ -107,10 +107,8 @@ class SheetsStore:
         self.ws = {}
         for t, cols in COLS.items():
             w = have.get(t) or self.sh.add_worksheet(title=t, rows=1000, cols=len(cols))
-            # Pastikan header kolom sesuai
-            headers = w.row_values(1)
-            if headers != cols:
-                w.update(range_name="A1", values=[cols])
+            if w.row_values(1) != cols:
+                w.update(values=[cols], range_name="A1")
             self.ws[t] = w
 
     def read(self, t):
@@ -119,39 +117,28 @@ class SheetsStore:
         return pd.DataFrame(rows, columns=COLS[t])
 
     def _row(self, t, key):
-        col_vals = [str(x) for x in self.ws[t].col_values(1)]
-        str_key = str(key)
-        if str_key in col_vals:
-            return col_vals.index(str_key) + 1
-        raise KeyError(f"Key {key} tidak ditemukan di tabel {t}")
+        return self.ws[t].col_values(1).index(str(key)) + 1
 
     def insert(self, t, vals):
         cols = COLS[t]
         if cols[0] == "id":
             nums = [int(x) for x in self.ws[t].col_values(1)[1:] if str(x).isdigit()]
             vals = {**vals, "id": max(nums, default=0) + 1}
-        # Hapus parameter table_range="A1" agar append_row berjalan normal di semua versi gspread
-        row_data = [clean(vals.get(c, "")) for c in cols]
-        self.ws[t].append_row(row_data, value_input_option="USER_ENTERED")
+        self.ws[t].append_row([clean(vals.get(c, "")) for c in cols], table_range="A1")
         return vals.get("id")
 
     def update(self, t, key, vals):
         r = self._row(t, key)
-        updates = []
-        for k, v in vals.items():
-            col_idx = COLS[t].index(k) + 1
-            cell_range = self.gs.utils.rowcol_to_a1(r, col_idx)
-            updates.append({"range": cell_range, "values": [[clean(v)]]})
-        self.ws[t].batch_update(updates)
+        self.ws[t].batch_update([{"range": self.gs.utils.rowcol_to_a1(r, COLS[t].index(k) + 1),
+                                  "values": [[clean(v)]]} for k, v in vals.items()])
 
     def delete(self, t, key):
-        r = self._row(t, key)
-        self.ws[t].delete_rows(r)
+        self.ws[t].delete_rows(self._row(t, key))
 
     def replace(self, t, recs):
         self.ws[t].clear()
-        data = [COLS[t]] + [[clean(r.get(c, "")) for c in COLS[t]] for r in recs]
-        self.ws[t].update(range_name="A1", values=data)
+        self.ws[t].update(values=[COLS[t]] + [[clean(r.get(c, "")) for c in COLS[t]] for r in recs],
+                          range_name="A1")
 
 
 @st.cache_resource
@@ -194,10 +181,7 @@ def W(op, t, *a):
 
 
 def idn(iso):
-    try:
-        d = datetime.fromisoformat(str(iso)[:10])
-    except ValueError:
-        return str(iso)
+    d = datetime.fromisoformat(iso)
     return f"{d.day} {BLN[d.month - 1]} {d.year}"
 
 
@@ -467,44 +451,18 @@ def _envelope(c, cl, up):
         c.drawString(x, T(y + 10), f"U.p. : {up}")
 
 
-def _items(raw):
-    try:
-        data = json.loads(raw) if isinstance(raw, str) else raw
-    except (TypeError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, list):
-        return []
-    out = []
-    for it in data:
-        if isinstance(it, dict):
-            out.append({"Uraian": str(it.get("Uraian") or ""),
-                        "Jumlah": str(it.get("Jumlah") or ""),
-                        "Keterangan": str(it.get("Keterangan") or "")})
-    return out
-
-
-def _client_of(cid):
-    cl = D("clients")
-    hit = cl[cl.id == cid]
-    if hit.empty:
-        return pd.Series({k: "" for k in COLS["clients"]})
-    return hit.iloc[0]
-
-
 def make_pdf(r, cl, kurir, kop, items, mode="semua"):
     """mode: 'tt' = tanda terima saja, 'amplop' = amplop saja, 'semua' = keduanya."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=PAGE)
     if mode != "amplop":
-        pages = _paginate(_rows(items), (MAX_BOTTOM - TOP_T - HEAD_H) * mm) or [[]]
+        pages = _paginate(_rows(items), (MAX_BOTTOM - TOP_T - HEAD_H) * mm)
         for i, rows in enumerate(pages, 1):
             used, pad = sum(h for _, h in rows) / mm, 0
             while len(rows) + pad < 7 and used + (pad + 1) * ROW_H <= 7 * ROW_H + .2:
                 pad += 1
             _form(c, r, cl, kurir, kop, rows, pad, i, len(pages))
-            # showPage setelah halaman terakhir membuat halaman kosong. Jangan panggil bila ini halaman akhir.
-            if i < len(pages) or mode != "tt":
-                c.showPage()
+            c.showPage()
     if mode != "tt":
         _envelope(c, cl, r["up"])
     c.save()
@@ -513,47 +471,59 @@ def make_pdf(r, cl, kurir, kop, items, mode="semua"):
 
 def pdf_for(rid, mode="semua"):
     d = D("receipts")
-    hit = d[d.id == rid]
-    if hit.empty:
-        raise RuntimeError("Tanda terima tidak ditemukan.")
-    r = hit.iloc[0]
+    r = d[d.id == rid].iloc[0]
+    cl = D("clients")
+    cl = cl[cl.id == r.client_id].iloc[0]
     k = D("couriers")
     k = k[k.id == r.courier_id]
-    return make_pdf(r, _client_of(r.client_id), k.nama.iloc[0] if len(k) else "",
-                    get_kop(), _items(r["items"]), mode)
+    return make_pdf(r, cl, k.nama.iloc[0] if len(k) else "", get_kop(), json.loads(r["items"]), mode)
 
 
 # ---------- Pratinjau & cetak ----------
-PRINT_HTML = """
+PRINT_HTML = r"""
 <style>
  body{margin:0;font-family:"Source Sans Pro",system-ui,sans-serif}
- button{padding:.45rem .9rem;margin-right:.4rem;border:1px solid #bbb;border-radius:.5rem;background:#fff;cursor:pointer;font-size:14px}
+ button{padding:.45rem .8rem;margin:0 .35rem .35rem 0;border:1px solid #bbb;border-radius:.5rem;background:#fff;cursor:pointer;font-size:14px}
  button.p{background:#ff4b4b;border-color:#ff4b4b;color:#fff}
+ #m{font-size:13px;color:#b00020}
 </style>
-<button class="p" id="p">🖨️ Cetak</button><button id="o">↗️ Buka di tab baru</button>
+<button class="p" id="p">🖨️ Cetak</button><button id="o">📄 Buka PDF</button><span id="m"></span>
 <script>
-const bin=atob("__B64__"),arr=new Uint8Array(bin.length);
+const PAGES=__PAGES__, PDF="__PDF__", SIZE="__SIZE__";
+const $=id=>document.getElementById(id), msg=t=>{$("m").textContent=t;};
+const css="@page{size:"+SIZE+";margin:0}html,body{margin:0;padding:0;background:#fff}"+
+ "img{display:block;width:210mm;height:148.5mm;break-after:page;page-break-after:always}"+
+ "img:last-child{break-after:auto;page-break-after:auto}.bar{display:none}"+
+ "@media screen{html,body{background:#777}.bar{display:block;position:sticky;top:0;padding:8px;background:#333;text-align:center}"+
+ ".bar button{padding:8px 18px;font-size:15px;cursor:pointer}img{margin:12px auto;box-shadow:0 0 8px #000}}";
+const bar='<div class="bar"><button onclick="window.print()">🖨️ Cetak</button></div>';
+const AUTO='<script>window.onload=function(){setTimeout(function(){window.focus();window.print()},400)};'+
+ 'window.onafterprint=function(){window.close()}<\/script>';
+const html='<!doctype html><html><head><meta charset="utf-8"><title>Tanda Terima</title><style>'+css+'</style></head><body>'+
+ bar+PAGES.map(p=>'<img src="data:image/png;base64,'+p+'">').join("")+AUTO+'</body></html>';
+const bin=atob(PDF),arr=new Uint8Array(bin.length);
 for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
 const url=URL.createObjectURL(new Blob([arr],{type:"application/pdf"}));
-document.getElementById("o").onclick=()=>window.open(url,"_blank");
-document.getElementById("p").onclick=()=>{
-  document.querySelectorAll("iframe").forEach(f=>f.remove());
-  const f=document.createElement("iframe");
-  f.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0";
-  f.onload=()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){window.open(url,"_blank");}};
-  f.src=url;document.body.appendChild(f);
+if(!PAGES.length)$("p").style.display="none";
+$("o").onclick=()=>{if(!window.open(url,"_blank"))msg("Pop-up diblokir browser.");};
+$("p").onclick=()=>{
+  const w=window.open("","_blank");
+  if(!w){msg("Pop-up diblokir: izinkan pop-up untuk situs ini, atau pakai Unduh PDF.");return;}
+  msg("");w.document.open();w.document.write(html);w.document.close();
 };
 </script>"""
 
 
-def print_bar(pdf):
-    """Tombol cetak langsung (dialog cetak browser) + buka PDF di tab baru."""
-    html = PRINT_HTML.replace("__B64__", base64.b64encode(pdf).decode())
+def print_bar(pdf, size):
+    """Cetak lewat jendela baru berisi gambar halaman (bukan pemutar PDF / iframe), agar andal di Safari/Chrome/Firefox."""
+    pages = [base64.b64encode(p).decode() for p in render_pages(pdf, 200)]
+    html = (PRINT_HTML.replace("__PAGES__", json.dumps(pages))
+            .replace("__PDF__", base64.b64encode(pdf).decode()).replace("__SIZE__", size))
     if hasattr(st, "iframe"):
-        st.iframe(html, height=46)
+        st.iframe(html, height=64)
     else:
         import streamlit.components.v1 as comp
-        comp.html(html, height=46)
+        comp.html(html, height=64)
 
 
 @st.cache_data(show_spinner=False, max_entries=30)
@@ -582,18 +552,24 @@ def preview(pdf, mode):
 
 def show_receipt(rid, key):
     opts = {"Tanda terima": "tt", "Amplop": "amplop", "Keduanya": "semua"}
-    pick = st.segmented_control("Yang dicetak / diunduh", list(opts), default="Tanda terima",
+    papers = {"A4 (setengah atas)": "A4 portrait", "A5 landscape": "210mm 148.5mm"}
+    c1, c2 = st.columns(2)
+    pick = c1.segmented_control("Yang dicetak / diunduh", list(opts), default="Tanda terima",
                                 key=f"mode_{key}") or "Tanda terima"
+    kp = c2.segmented_control("Kertas", list(papers), default="A4 (setengah atas)",
+                              key=f"paper_{key}") or "A4 (setengah atas)"
     mode = opts[pick]
     pdf = pdf_for(rid, mode)
     d = D("receipts")
     no = d.loc[d.id == rid, "nomor"].iloc[0]
-    a, b = st.columns([3, 2])
+    a, b = st.columns([4, 1.3])
     with a:
-        print_bar(pdf)
+        print_bar(pdf, papers[kp])
     b.download_button("⬇️ Unduh PDF", pdf, f"{no}.pdf", "application/pdf", key=f"dl_{key}")
-    st.caption("Di dialog cetak: ukuran kertas **A5** (atau A4 dengan skala **100% / Actual size**, lalu potong "
-               "setengah), margin **None/Tanpa**. Jika dialog tidak muncul, pakai **Buka di tab baru** lalu Ctrl+P.")
+    st.caption("**Cetak** membuka jendela baru berisi halaman siap cetak (izinkan pop-up bila diminta); jika dialog tidak "
+               "muncul sendiri, tekan tombol Cetak di jendela itu. Di dialog: skala **100%**, matikan *header & footer*. "
+               "Pada **A4**, formulir tercetak di setengah atas (potong di tengah); pilih **A5 landscape** bila kertasnya A5. "
+               "Cadangan: **Buka PDF** lalu Cmd/Ctrl+P.")
     preview(pdf, mode)
 
 
@@ -637,11 +613,9 @@ def page_buat():
     cid = st.selectbox("Kepada", cl.id.tolist(), format_func=lambda i: nm[i])
     row = cl[cl.id == cid].iloc[0]
     st.caption(" · ".join(x for x in [row.alamat1, row.alamat2, row.alamat3, row.alamat4] if x))
-    kontak = [x.strip() for x in str(row.kontak or "").split("\n") if x.strip()]
-    if kontak:
-        up = st.selectbox("U.p. (pilih atau ketik baru)", kontak, index=0, accept_new_options=True)
-    else:
-        up = st.text_input("U.p. (opsional)")
+    kontak = [x.strip() for x in row.kontak.split("\n") if x.strip()]
+    up = st.selectbox("U.p. (pilih atau ketik baru)", kontak, index=0 if kontak else None,
+                      accept_new_options=True)
     st.write("**Daftar dokumen**")
     items = st.data_editor(pd.DataFrame([{"Uraian": "", "Jumlah": "1 asli", "Keterangan": ""}]),
                            num_rows="dynamic", width="stretch", key=f"items{n}")
@@ -777,26 +751,19 @@ def page_setelan():
         st.success("Data dipulihkan.")
     st.subheader("Data contoh")
     if st.button("Isi data contoh (fiktif)"):
-        ada_klien = set(D("clients", True).nama)
-        if "PT CONTOH ABADI Tbk" not in ada_klien:
-            W("insert", "clients", dict(nama="PT CONTOH ABADI Tbk", kode="CABD", alamat1="Menara Contoh Lt. 10",
-                                        alamat2="Jl. Jenderal Sudirman Kav. 1", alamat3="Jakarta 10220", alamat4="",
-                                        kontak="Bpk. Budi\nIbu Sari"))
-        ada_kurir = set(D("couriers", True).nama)
+        W("insert", "clients", dict(nama="PT CONTOH ABADI Tbk", kode="CABD", alamat1="Menara Contoh Lt. 10",
+                                    alamat2="Jl. Jenderal Sudirman Kav. 1", alamat3="Jakarta 10220", alamat4="",
+                                    kontak="Bpk. Budi\nIbu Sari"))
         for n in ("Pengantar A", "Pengantar B"):
-            if n not in ada_kurir:
-                W("insert", "couriers", {"nama": n, "aktif": 1})
-        st.success("Data contoh ditambahkan bila belum ada.")
+            W("insert", "couriers", {"nama": n, "aktif": 1})
+        st.success("Data contoh ditambahkan.")
 
 
 # ---------- Main ----------
 pw = secret("app_password")
 if pw and not st.session_state.get("ok"):
-    st.title("Tanda Terima")
-    sandi = st.text_input("Kata sandi", type="password")
-    if sandi and sandi != pw:
-        st.error("Kata sandi salah.")
-    if sandi == pw:
+    st.title("🧾 Tanda Terima")
+    if st.text_input("Kata sandi", type="password") == pw:
         st.session_state["ok"] = True
         st.rerun()
     st.stop()
