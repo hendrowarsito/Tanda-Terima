@@ -20,6 +20,12 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import Paragraph
 
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# 1. Daftarkan file font ke ReportLab (pastikan nama file .ttf sesuai dengan yang Anda unggah)
+pdfmetrics.registerFont(TTFont("Tw Cen MT", "TwCenMT.ttf"))
+
 st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
 WIB = ZoneInfo("Asia/Jakarta")
 JENIS = {"PR": "Proposal", "INV": "Invoice", "KW": "Kwitansi", "LP": "Laporan", "UM": "Umum"}
