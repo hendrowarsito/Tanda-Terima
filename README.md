@@ -4,6 +4,19 @@ Pengganti OmniForm: penomoran otomatis, master klien/pengantar, item dinamis, PD
 riwayat, status pengiriman, dasbor "belum kembali", cadangan JSON.
 Penyimpanan: **Google Sheets** (utama) atau SQLite (cadangan, hilang saat restart di Streamlit Cloud).
 
+## Tampilan & tema (baru)
+- **Navigasi atas** (Buat · Riwayat · Klien & Pengantar · Pengaturan) dengan logo; di layar sempit/ponsel menu masuk ke panel samping.
+- **Buat:** formulir bernomor (Pengiriman → Penerima → Daftar dokumen) di kiri, **pratinjau A4 yang menempel** di kanan.
+- **Riwayat:** kartu ringkasan (total, bulan ini, menunggu diterima, lewat 7 hari), tabel terurut dari yang terbaru dengan label status berwarna;
+  **klik satu baris** untuk membuka detail, mengubah status, atau mencetak.
+- **Klien & Pengantar** dan **Pengaturan** memakai tab; pesan "tersimpan" tampil sebagai notifikasi.
+- Halaman masuk (bila `app_password` diisi) berlogo dan mendukung tombol Enter.
+- Warna utama mengikuti logo (`#2E1F6E`). Tema diatur di `.streamlit/config.toml` (**wajib ikut diunggah ke GitHub**) dan CSS di dalam `app.py`.
+  Tema dikunci mode terang agar warna konsisten.
+- File font `TCCEB.TTF` tetap diperlukan (kop surat PDF dan tulisan "Tanda Terima" di bar atas).
+
+**File yang diunggah ke repo:** `app.py`, `requirements.txt`, `TCCEB.TTF`, `.streamlit/config.toml` (opsional `logo.png`).
+
 ## 1. Siapkan Google Sheets (sekali saja)
 1. Buka https://console.cloud.google.com → buat project baru.
 2. *APIs & Services → Library*: aktifkan **Google Sheets API** dan **Google Drive API**.
