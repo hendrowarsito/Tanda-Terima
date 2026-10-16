@@ -34,7 +34,67 @@ font_path = os.path.join(current_dir, "TCCEB.TTF")
 # 3. Daftarkan font menggunakan path absolut
 pdfmetrics.registerFont(TTFont("Tw Cen MT", font_path))
 
-st.set_page_config(page_title="Tanda Terima", page_icon="🧾", layout="wide")
+# ---------- Tema & CSS ----------
+BRAND = "#2E1F6E"
+CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+:root{--brand:#2E1F6E;--brand2:#4A36A8;--ink:#1B1F3B;--muted:#6B7280;--line:#E4E7F0;--bg:#F5F6FA;}
+html,body,.stApp,button,input,textarea,select{font-family:'Inter','Source Sans Pro',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}
+.stApp{background:var(--bg);}
+[data-testid="stHeader"]{background:rgba(255,255,255,.94);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);}
+footer{visibility:hidden;}
+.block-container{padding-top:5.2rem;padding-bottom:5rem;max-width:1280px;}
+[data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--line);}
+/* judul halaman */
+.ph h1{font-size:1.85rem;font-weight:700;color:var(--ink);margin:0;padding:0;letter-spacing:-.02em;line-height:1.2;}
+.ph p{color:var(--muted);margin:.3rem 0 1.5rem;font-size:.97rem;}
+/* kartu (container ber-key "card_*") */
+div[class*="st-key-card_"]{background:#fff;border:1px solid var(--line);border-radius:14px;padding:1.15rem 1.3rem;
+  box-shadow:0 1px 2px rgba(27,31,59,.04),0 8px 22px rgba(27,31,59,.05);}
+@media (min-width:992px){
+  /* kolom pratinjau menempel saat form di-scroll (sticky harus pada kolom, bukan di dalamnya) */
+  div[data-testid="stColumn"]:has(.st-key-card_prev){position:sticky;top:4.6rem;align-self:flex-start;}
+}
+.st-key-card_saved{background:#F4FBF7 !important;border-color:#BFE3CB !important;}
+.st-key-card_filter{padding:.8rem 1rem !important;}
+.st-key-card_login{margin-top:.5rem;}
+/* judul seksi bernomor */
+.sec{display:flex;align-items:center;gap:.6rem;margin:0 0 .9rem;}
+.sec .n{display:inline-flex;align-items:center;justify-content:center;min-width:1.6rem;height:1.6rem;border-radius:999px;
+  background:var(--brand);color:#fff;font-size:.8rem;font-weight:600;}
+.sec .t{font-weight:600;color:var(--ink);font-size:1.03rem;}
+.sec .h{color:var(--muted);font-size:.82rem;margin-left:auto;}
+/* kartu alamat & pasangan label-nilai */
+.addr{background:#F7F8FC;border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:8px;
+  padding:.65rem .85rem;font-size:.9rem;color:#374151;line-height:1.55;margin:-.15rem 0 .9rem;}
+.kv span{display:block;font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;}
+.kv b{font-weight:600;color:var(--ink);font-size:.95rem;}
+.tip{background:#F7F8FC;border:1px solid var(--line);border-radius:10px;padding:.8rem 1rem;color:#4B5563;font-size:.88rem;line-height:1.6;}
+.tip b{color:var(--ink);}
+/* tombol */
+[data-testid="stBaseButton-primary"],button[kind="primary"]{background:var(--brand);border:1px solid var(--brand);color:#fff;font-weight:600;}
+[data-testid="stBaseButton-primary"]:hover,button[kind="primary"]:hover{background:var(--brand2);border-color:var(--brand2);color:#fff;}
+[data-testid="stBaseButton-secondary"],[data-testid="stDownloadButton"] button{border-radius:10px;}
+/* metrik, gambar, tab */
+[data-testid="stMetricValue"]{color:var(--brand);font-weight:700;}
+[data-testid="stMetricLabel"]{color:var(--muted);}
+[data-testid="stImage"] img{border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 18px rgba(27,31,59,.12);}
+button[role="tab"]{font-weight:600;}
+/* halaman masuk */
+.login{text-align:center;margin:3.5rem 0 1rem;}
+.login img{height:88px;margin-bottom:.8rem;border-radius:6px;}
+.login h2{margin:0;padding:0;color:var(--ink);font-weight:700;letter-spacing:-.01em;}
+.login p{color:var(--muted);margin:.25rem 0 0;font-size:.92rem;}
+"""
+
+
+def inject_css():
+    st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+
+
+st.set_page_config(page_title="Tanda Terima", page_icon=":material/receipt_long:", layout="wide",
+                   initial_sidebar_state="collapsed")
+inject_css()
 WIB = ZoneInfo("Asia/Jakarta")
 JENIS = {"PR": "Proposal", "INV": "Invoice", "KW": "Kwitansi", "LP": "Laporan", "UM": "Umum"}
 STATUS = ["Draft", "Diserahkan", "Diterima", "Arsip"]
@@ -783,7 +843,7 @@ PRINT_HTML = r"""
 <style>
  body{margin:0;font-family:"Source Sans Pro",system-ui,sans-serif}
  button{padding:.45rem .8rem;margin:0 .35rem .35rem 0;border:1px solid #bbb;border-radius:.5rem;background:#fff;cursor:pointer;font-size:14px}
- button.p{background:#ff4b4b;border-color:#ff4b4b;color:#fff}
+ button.p{background:#2E1F6E;border-color:#2E1F6E;color:#fff;font-weight:600}
  #m{font-size:13px;color:#b00020}
 </style>
 <button class="p" id="p">🖨️ Cetak</button><button id="o">📄 Buka PDF</button><span id="m"></span>
@@ -832,16 +892,16 @@ def render_pages(pdf, dpi=120):
         return [p.get_pixmap(dpi=dpi).tobytes("png") for p in doc]
 
 
-def preview(pdf):
+def preview(pdf, width=640):
     imgs = render_pages(pdf)
     if not imgs:
         st.info("Pratinjau butuh paket `pymupdf` (lihat requirements.txt).")
         return
     if len(imgs) == 1:
-        st.image(imgs[0], width=640)
+        st.image(imgs[0], width=width)
     else:
         for tab, img in zip(st.tabs([f"Lembar {i}/{len(imgs)}" for i in range(1, len(imgs) + 1)]), imgs):
-            tab.image(img, width=640)
+            tab.image(img, width=width)
 
 
 def show_receipt(rid, key):
@@ -851,15 +911,21 @@ def show_receipt(rid, key):
     pdf = pdf_for(rid, opts[pick])
     d = D("receipts")
     no = d.loc[d.id == rid, "nomor"].iloc[0]
-    a, b = st.columns([4, 1.3])
+    a, b = st.columns([3, 1.2], vertical_alignment="center")
     with a:
         print_bar(pdf)
-    b.download_button("⬇️ Unduh PDF", pdf, f"{no}.pdf", "application/pdf", key=f"dl_{key}")
-    st.caption("Kertas **A4**: setengah atas tanda terima, setengah bawah amplop (garis putus-putus = tempat memotong). "
-               "**Cetak** membuka jendela baru berisi halaman siap cetak (izinkan pop-up bila diminta); jika dialog tidak "
-               "muncul sendiri, tekan tombol Cetak di jendela itu. Di dialog: ukuran **A4**, skala **100%**, matikan "
-               "*header & footer*. Cadangan: **Buka PDF** lalu Cmd/Ctrl+P.")
-    preview(pdf)
+    b.download_button("Unduh PDF", pdf, f"{no}.pdf", "application/pdf", key=f"dl_{key}",
+                      icon=":material/download:", width="stretch")
+    pcol, icol = st.columns(2, gap="large")
+    with pcol:
+        preview(pdf, width="stretch")
+    with icol:
+        st.markdown(
+            '<div class="tip"><b>Cara mencetak</b><br>'
+            '1. Tekan <b>Cetak</b> — jendela baru berisi lembar siap cetak terbuka (izinkan pop-up bila diminta).<br>'
+            '2. Di dialog cetak pilih ukuran <b>A4</b>, skala <b>100%</b>, dan matikan <i>header &amp; footer</i>.<br>'
+            '3. Setengah atas = tanda terima, setengah bawah = amplop (garis putus-putus = tempat memotong).<br><br>'
+            'Cadangan: <b>Buka PDF</b> lalu Cmd/Ctrl+P, atau <b>Unduh PDF</b>.</div>', unsafe_allow_html=True)
 
 
 def next_nomor(jenis, tahun):
@@ -868,79 +934,84 @@ def next_nomor(jenis, tahun):
     return f"{(int(m) + 1 if pd.notna(m) else 1):04d}-{jenis}"
 
 
-# ---------- Halaman ----------
-def page_buat():
-    # Pastikan DataFrame clients tidak kosong dan mempunyai kolom 'nama' sebelum sort
-    cl = D("clients")
-    if "nama" in cl.columns and not cl.empty:
-        cl = cl.sort_values("nama")
-    else:
-        cl = pd.DataFrame(columns=COLS["clients"])
+# ---------- Tampilan (UI) ----------
+STATUS_LABEL = {"Draft": "📝 Draft", "Diserahkan": "🚚 Diserahkan", "Diterima": "✅ Diterima", "Arsip": "🗄️ Arsip"}
+STATUS_COLOR = {"Draft": "orange", "Diserahkan": "blue", "Diterima": "green", "Arsip": "gray"}
 
-    cr = D("couriers")
-    if "aktif" in cr.columns:
-        cr = cr[cr.aktif == 1]
-    else:
-        cr = pd.DataFrame(columns=COLS["couriers"])
 
-    if cl.empty or cr.empty:
-        st.info("Isi dulu menu **Klien & Pengantar** (atau pakai data contoh di **Pengaturan**).")
-        return
-        
-    now = datetime.now(WIB)
-    n = st.session_state.get("n", 0)
-    st.session_state.setdefault("b_tgl", now.date())
-    st.session_state.setdefault("b_jam", now.time().replace(second=0, microsecond=0))
-    a, b, c3, d = st.columns(4)
-    jenis = a.selectbox("Jenis", list(JENIS), format_func=lambda k: f"{k} – {JENIS[k]}")
-    tgl = b.date_input("Tanggal", key="b_tgl")
-    jam = c3.time_input("Jam", key="b_jam")
-    kur = d.selectbox("Pengantar", cr.id.tolist(), format_func=lambda i: cr.set_index("id").nama[i])
-    nm = cl.set_index("id").nama
-    cid = st.selectbox("Kepada", cl.id.tolist(), format_func=lambda i: nm[i])
-    row = cl[cl.id == cid].iloc[0]
-    st.caption(" · ".join(x for x in [row.alamat1, row.alamat2, row.alamat3, row.alamat4] if x))
-    kontak = [x.strip() for x in row.kontak.split("\n") if x.strip()]
-    up = st.selectbox("U.p. (pilih atau ketik baru)", kontak, index=0 if kontak else None,
-                      accept_new_options=True)
-    st.write("**Daftar dokumen**")
-    items = st.data_editor(pd.DataFrame([{"Uraian": "", "Jumlah": "1 asli", "Keterangan": ""}]),
-                           num_rows="dynamic", width="stretch", key=f"items{n}")
-    catatan = st.text_input("Catatan (opsional)")
-    its = [r for r in items.fillna("").to_dict("records") if str(r["Uraian"]).strip()]
+def logo_bytes():
+    return LOGO_FILE.read_bytes() if LOGO_FILE.exists() else base64.b64decode("".join(LOGO_B64.split()))
 
-    st.subheader("Pratinjau")
-    rprev = dict(nomor=next_nomor(jenis, tgl.year), tanggal=tgl.isoformat(), jam=jam.strftime("%H:%M"),
-                 up=up or "", catatan=catatan)
-    preview(make_pdf(rprev, row, cr.set_index("id").nama[kur], get_kop(), its, "semua"))
-    st.caption("Nomor final ditetapkan saat disimpan. Tombol cetak muncul setelah disimpan.")
-    if st.button("💾 Simpan", type="primary"):
-        if not its:
-            st.error("Isi minimal satu baris dokumen.")
-        else:
-            rid = save_receipt(dict(jenis=jenis, tahun=tgl.year, tanggal=tgl.isoformat(), jam=jam.strftime("%H:%M"),
-                                    client_id=int(cid), up=up or "", courier_id=int(kur), status="Draft",
-                                    catatan=catatan, items=json.dumps(its, ensure_ascii=False),
-                                    created_at=now.isoformat(timespec="seconds")))
-            st.session_state["last"] = rid
-            st.session_state["n"] = n + 1
-            st.rerun()
-    
-    st.header("Buat tanda terima")
-    if "last" in st.session_state:
-        d = D("receipts")
-        m = d[d.id == st.session_state["last"]]
-        if m.empty:
-            st.session_state.pop("last")
-        else:
-            with st.container(border=True):
-                st.success(f"Tanda terima **{m.nomor.iloc[0]}** tersimpan. Siap dicetak:")
-                show_receipt(int(m.id.iloc[0]), "last")
-                if st.button("✖ Tutup & buat baru"):
-                    st.session_state.pop("last")
+
+@st.cache_resource
+def brand_image():
+    """Logo + tulisan 'Tanda Terima' (font Tw Cen MT milik kantor) untuk bagian atas sidebar."""
+    from PIL import Image, ImageDraw, ImageFont
+    h = 128
+    logo = Image.open(io.BytesIO(logo_bytes())).convert("RGBA")
+    logo = logo.resize((round(logo.width * h / logo.height), h), Image.LANCZOS)
+    try:
+        font = ImageFont.truetype(font_path, 78)
+    except Exception:
+        font = ImageFont.load_default()
+    txt = "Tanda Terima"
+    box = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), txt, font=font)
+    img = Image.new("RGBA", (logo.width + 28 + box[2] + 8, h), (255, 255, 255, 0))
+    img.paste(logo, (0, 0), logo)
+    ImageDraw.Draw(img).text((logo.width + 28, (h - (box[3] - box[1])) // 2 - box[1]), txt, font=font, fill="#2E1F6E")
+    return img
+
+
+def page_header(title, sub=""):
+    st.markdown(f'<div class="ph"><h1>{title}</h1><p>{sub}</p></div>', unsafe_allow_html=True)
+
+
+def section(num, title, hint=""):
+    st.markdown(f'<div class="sec"><span class="n">{num}</span><span class="t">{title}</span>'
+                f'<span class="h">{hint}</span></div>', unsafe_allow_html=True)
+
+
+def kv(label, value):
+    return f'<div class="kv"><span>{label}</span><b>{escape(str(value)) if value else "—"}</b></div>'
+
+
+def flash(msg, icon="✅"):
+    """Pesan singkat yang tetap tampil setelah st.rerun()."""
+    st.session_state["_flash"] = (msg, icon)
+
+
+def show_flash():
+    f = st.session_state.pop("_flash", None)
+    if f:
+        st.toast(f[0], icon=f[1])
+
+
+def empty_state(title, text, page=None, label="", icon=None):
+    with st.container(key="card_empty"):
+        st.markdown(f"#### {title}")
+        st.write(text)
+        if page is not None:
+            st.page_link(page, label=label, icon=icon)
+
+
+def login_page(pw):
+    _, mid, _ = st.columns([1, 1.1, 1])
+    with mid:
+        uri = "data:image/png;base64," + base64.b64encode(logo_bytes()).decode()
+        st.markdown(f'<div class="login"><img src="{uri}"><h2>Tanda Terima</h2>'
+                    f'<p>KJPP Suwendho Rinaldy &amp; Rekan · Cabang Jakarta</p></div>', unsafe_allow_html=True)
+        with st.container(key="card_login"):
+            with st.form("login", border=False):
+                p = st.text_input("Kata sandi", type="password", placeholder="Masukkan kata sandi")
+                ok = st.form_submit_button("Masuk", type="primary", width="stretch", icon=":material/lock_open:")
+            if ok:
+                if p == pw:
+                    st.session_state["ok"] = True
                     st.rerun()
+                st.error("Kata sandi salah.")
 
 
+# ---------- Halaman ----------
 def _parse_d(x, default):
     try:
         return datetime.fromisoformat(x).date()
@@ -955,161 +1026,298 @@ def _parse_t(x, default):
         return default
 
 
+def _short(iso):
+    try:
+        d = datetime.fromisoformat(iso)
+        return f"{d.day} {BLN[d.month - 1][:3]} {d.year}"
+    except Exception:
+        return ""
+
+
+def page_buat():
+    page_header("Buat tanda terima", "Isi data pengiriman. Pratinjau lembar A4 (atas: tanda terima, bawah: amplop) "
+                                      "berubah seketika saat Anda mengisi.")
+    if "last" in st.session_state:
+        d = D("receipts")
+        m = d[d.id == st.session_state["last"]]
+        if m.empty:
+            st.session_state.pop("last")
+        else:
+            with st.container(key="card_saved"):
+                st.markdown(f"#### ✅ Tanda terima **{m.nomor.iloc[0]}** tersimpan")
+                st.caption("Siap dicetak. Status awal: Draft — ubah menjadi Diserahkan / Diterima di menu Riwayat.")
+                show_receipt(int(m.id.iloc[0]), "last")
+                if st.button("Buat tanda terima baru", icon=":material/add:"):
+                    st.session_state.pop("last")
+                    st.rerun()
+    cl = D("clients")
+    cl = cl.sort_values("nama") if not cl.empty else pd.DataFrame(columns=COLS["clients"])
+    cr = D("couriers")
+    cr = cr[cr.aktif == 1] if "aktif" in cr.columns else pd.DataFrame(columns=COLS["couriers"])
+    if cl.empty or cr.empty:
+        empty_state("Data master belum lengkap",
+                    "Tambahkan minimal satu klien dan satu pengantar sebelum membuat tanda terima "
+                    "(atau isi data contoh di menu Pengaturan).", P_MASTER, "Buka Klien & Pengantar", ":material/groups:")
+        return
+    now = datetime.now(WIB)
+    n = st.session_state.get("n", 0)
+    st.session_state.setdefault("b_tgl", now.date())
+    st.session_state.setdefault("b_jam", now.time().replace(second=0, microsecond=0))
+    kurir_nama = cr.set_index("id").nama
+    left, right = st.columns([6, 5], gap="large")
+    with left:
+        with st.container(key="card_kirim"):
+            section("1", "Pengiriman")
+            a, b = st.columns(2)
+            jenis = a.selectbox("Jenis dokumen", list(JENIS), format_func=lambda k: f"{k} – {JENIS[k]}")
+            kur = b.selectbox("Pengantar", cr.id.tolist(), format_func=lambda i: kurir_nama[i])
+            c1, c2 = st.columns(2)
+            tgl = c1.date_input("Tanggal", key="b_tgl", format="DD/MM/YYYY")
+            jam = c2.time_input("Jam", key="b_jam")
+        with st.container(key="card_penerima"):
+            section("2", "Penerima")
+            nm = cl.set_index("id").nama
+            cid = st.selectbox("Kepada", cl.id.tolist(), format_func=lambda i: nm[i])
+            row = cl[cl.id == cid].iloc[0]
+            alamat = [escape(x) for x in [row.alamat1, row.alamat2, row.alamat3, row.alamat4] if x]
+            if row.kode_pos:
+                alamat.append(escape(row.kode_pos))
+            if alamat:
+                st.markdown(f'<div class="addr">{"<br>".join(alamat)}</div>', unsafe_allow_html=True)
+            kontak = [x.strip() for x in row.kontak.split("\n") if x.strip()]
+            up = st.selectbox("U.p. (pilih atau ketik baru)", kontak, index=0 if kontak else None,
+                              accept_new_options=True, placeholder="Nama penerima / atensi")
+        with st.container(key="card_dok"):
+            section("3", "Daftar dokumen", "satu baris per dokumen")
+            items = st.data_editor(pd.DataFrame([{"Uraian": "", "Jumlah": "1 asli", "Keterangan": ""}]),
+                                   num_rows="dynamic", width="stretch", key=f"items{n}",
+                                   column_config={"Uraian": st.column_config.TextColumn("Uraian dokumen", width=190),
+                                                  "Jumlah": st.column_config.TextColumn("Jumlah", width=85),
+                                                  "Keterangan": st.column_config.TextColumn("Keterangan", width=170)})
+            catatan = st.text_input("Catatan (opsional)", placeholder="Mis. dokumen diterima lengkap")
+        simpan = st.button("Simpan tanda terima", type="primary", icon=":material/save:", width="stretch")
+    its = [r for r in items.fillna("").to_dict("records") if str(r["Uraian"]).strip()]
+    nomor_prev = next_nomor(jenis, tgl.year)
+    with right:
+        with st.container(key="card_prev"):
+            section("✓", "Pratinjau", "lembar A4")
+            rprev = dict(nomor=nomor_prev, tanggal=tgl.isoformat(), jam=jam.strftime("%H:%M"),
+                         up=up or "", catatan=catatan)
+            preview(make_pdf(rprev, row, kurir_nama[kur], get_kop(), its, "semua"), width="stretch")
+            st.caption(f"Nomor berikutnya **{nomor_prev}** — nomor final ditetapkan saat disimpan.")
+    if simpan:
+        if not its:
+            st.error("Isi minimal satu baris dokumen pada bagian 3.")
+        else:
+            rid = save_receipt(dict(jenis=jenis, tahun=tgl.year, tanggal=tgl.isoformat(), jam=jam.strftime("%H:%M"),
+                                    client_id=int(cid), up=up or "", courier_id=int(kur), status="Draft",
+                                    catatan=catatan, items=json.dumps(its, ensure_ascii=False),
+                                    created_at=now.isoformat(timespec="seconds")))
+            st.session_state["last"] = rid
+            st.session_state["n"] = n + 1
+            st.rerun()
+
+
 def page_riwayat():
-    st.header("Riwayat")
+    page_header("Riwayat", "Pantau pengiriman, catat penerimaan, dan cetak ulang kapan saja.")
     df = load_receipts()
     if df.empty:
-        st.info("Belum ada tanda terima.")
+        empty_state("Belum ada tanda terima", "Tanda terima yang Anda simpan akan muncul di sini.",
+                    P_BUAT, "Buat tanda terima pertama", ":material/add_circle:")
         return
-    a, b, c3 = st.columns([2, 1, 1])
-    s = a.text_input("Cari (klien / nomor / isi dokumen)")
-    jf = b.multiselect("Jenis", list(JENIS))
-    sf = c3.multiselect("Status", STATUS)
-    v = df.sort_values(["tahun", "seq"], ascending=False)
+    for c in ("klien", "pengantar"):
+        df[c] = df[c].fillna("")
+    df = df.sort_values(["tanggal", "jam", "id"], ascending=False).reset_index(drop=True)
+    now = datetime.now(WIB)
+    pend = df[df.status == "Diserahkan"]
+    m = st.columns(4)
+    m[0].metric("Total tanda terima", len(df), border=True)
+    m[1].metric("Bulan ini", int((df.tanggal.str[:7] == now.strftime("%Y-%m")).sum()), border=True)
+    m[2].metric("Menunggu diterima", len(pend), border=True)
+    m[3].metric("Lewat 7 hari", int((pend.tanggal < (now.date() - timedelta(days=7)).isoformat()).sum()), border=True,
+                help="Berstatus Diserahkan lebih dari 7 hari lalu dan belum dicatat Diterima.")
+    with st.container(key="card_filter"):
+        a, b, c3 = st.columns([2.4, 1, 1])
+        s = a.text_input("Cari", placeholder="🔍  Cari klien, nomor, atau isi dokumen", label_visibility="collapsed")
+        jf = b.multiselect("Jenis", list(JENIS), format_func=lambda k: JENIS[k], placeholder="Semua jenis",
+                           label_visibility="collapsed")
+        sf = c3.multiselect("Status", STATUS, placeholder="Semua status", label_visibility="collapsed")
+    v = df
     if s:
-        hay = (v.klien.fillna("") + v.nomor + v["items"]).str.lower()
+        hay = (v.klien + " " + v.nomor + " " + v["items"]).str.lower()
         v = v[hay.str.contains(s.lower(), regex=False)]
     if jf:
         v = v[v.jenis.isin(jf)]
     if sf:
         v = v[v.status.isin(sf)]
-    st.dataframe(v[["nomor", "jenis", "tanggal", "jam", "klien", "pengantar", "status", "penerima", "tgl_terima",
-                    "jam_terima"]], hide_index=True, width="stretch")
+    st.caption(f"{len(v)} dari {len(df)} tanda terima · klik satu baris untuk membuka")
+    disp = pd.DataFrame({"Nomor": v.nomor, "Jenis": v.jenis.map(lambda k: JENIS.get(k, k)),
+                         "Tanggal": pd.to_datetime(v.tanggal, errors="coerce"), "Jam": v.jam, "Klien": v.klien,
+                         "Pengantar": v.pengantar, "Status": v.status.map(lambda x: STATUS_LABEL.get(x, x)),
+                         "Diterima": [f"{p} · {_short(t)}" if p else "—" for p, t in zip(v.penerima, v.tgl_terima)]})
+    ev = st.dataframe(disp, hide_index=True, width="stretch", height=min(430, 38 + 35 * max(len(disp), 1)),
+                      on_select="rerun", selection_mode="single-row", key="riw_tbl",
+                      column_config={"Nomor": st.column_config.TextColumn(width="small"),
+                                     "Tanggal": st.column_config.DateColumn(format="DD MMM YYYY"),
+                                     "Jam": st.column_config.TextColumn(width="small")})
     if v.empty:
+        st.info("Tidak ada tanda terima yang cocok dengan filter.")
         return
-    st.divider()
-    lab = {r.id: f"{r.nomor} · {r.tanggal} · {r.klien}" for r in v.itertuples()}
-    rid = st.selectbox("Pilih tanda terima", list(lab), format_func=lab.get)
+    ids = v.id.tolist()
+    sel = ev.selection.rows
+    if sel and sel[0] < len(ids):
+        if st.session_state.get("riw_last") != ids[sel[0]]:  # baris baru diklik -> buka
+            st.session_state["riw_last"] = ids[sel[0]]
+            st.session_state["riw_pick"] = ids[sel[0]]
+    elif not sel:
+        st.session_state.pop("riw_last", None)
+    if st.session_state.get("riw_pick") not in ids:
+        st.session_state["riw_pick"] = ids[0]
+    lab = {r.id: f"{r.nomor} · {idn(r.tanggal)} · {r.klien}" for r in v.itertuples()}
+    rid = st.selectbox("Tanda terima yang dibuka", ids, format_func=lab.get, key="riw_pick")
     r = v[v.id == rid].iloc[0]
-    a, b = st.columns(2)
-    ns = a.selectbox("Status", STATUS, index=STATUS.index(r.status) if r.status in STATUS else 0, key=f"st_{rid}")
-    now = datetime.now(WIB)
-    if ns == "Diterima":  # wajib isi penerima, tanggal, dan jam diterima
-        pen = a.text_input("Penerima *", value=r.penerima, key=f"pen_{rid}")
-        c1, c2 = a.columns(2)
-        tg = c1.date_input("Tanggal diterima", value=_parse_d(r.tgl_terima, now.date()), key=f"tgt_{rid}")
-        jm = c2.time_input("Jam diterima", value=_parse_t(r.jam_terima, now.time().replace(second=0, microsecond=0)),
-                           key=f"jmt_{rid}")
-    if a.button("Perbarui status"):
-        if ns == "Diterima" and not pen.strip():
-            a.error("Isi nama penerima.")
-        else:
-            vals = {"status": ns}
-            if ns == "Diterima":
-                vals.update(penerima=pen.strip(), tgl_terima=tg.isoformat(), jam_terima=jm.strftime("%H:%M"))
-            W("update", "receipts", int(rid), vals)
-            st.rerun()
-    if b.checkbox("Izinkan hapus") and b.button("🗑️ Hapus"):
-        W("delete", "receipts", int(rid))
-        st.rerun()
-    show_receipt(int(rid), f"h{rid}")
+    with st.container(key="card_detail"):
+        h, bd = st.columns([5, 1.3], vertical_alignment="center")
+        h.markdown(f"### {r.nomor}")
+        h.caption(f"{JENIS.get(r.jenis, r.jenis)} · {idn(r.tanggal)} · {r.jam} WIB")
+        with bd:
+            st.badge(r.status, color=STATUS_COLOR.get(r.status, "gray"))
+        k = st.columns(4)
+        k[0].markdown(kv("Klien", r.klien), unsafe_allow_html=True)
+        k[1].markdown(kv("U.p.", r.up), unsafe_allow_html=True)
+        k[2].markdown(kv("Pengantar", r.pengantar), unsafe_allow_html=True)
+        terima = f"{r.penerima} · {idn(r.tgl_terima)} {r.jam_terima}" if r.penerima and r.tgl_terima else r.penerima
+        k[3].markdown(kv("Diterima oleh", terima), unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame(json.loads(r["items"])), hide_index=True, width="stretch")
+        t1, t2 = st.tabs([":material/fact_check: Status penerimaan", ":material/print: Cetak & pratinjau"])
+        with t1:
+            cur = r.status if r.status in STATUS else "Draft"
+            ns = st.segmented_control("Status pengiriman", STATUS, default=cur, key=f"st_{rid}",
+                                      format_func=lambda x: STATUS_LABEL[x]) or cur
+            now = datetime.now(WIB)
+            if ns == "Diterima":  # wajib isi penerima, tanggal, dan jam diterima
+                p1, p2, p3 = st.columns([2, 1, 1])
+                pen = p1.text_input("Penerima *", value=r.penerima, key=f"pen_{rid}", placeholder="Nama penerima")
+                tg = p2.date_input("Tanggal diterima", value=_parse_d(r.tgl_terima, now.date()), key=f"tgt_{rid}",
+                                   format="DD/MM/YYYY")
+                jm = p3.time_input("Jam diterima", key=f"jmt_{rid}",
+                                   value=_parse_t(r.jam_terima, now.time().replace(second=0, microsecond=0)))
+            if st.button("Simpan status", type="primary", icon=":material/check:", key=f"sv_{rid}"):
+                if ns == "Diterima" and not pen.strip():
+                    st.error("Isi nama penerima.")
+                else:
+                    vals = {"status": ns}
+                    if ns == "Diterima":
+                        vals.update(penerima=pen.strip(), tgl_terima=tg.isoformat(), jam_terima=jm.strftime("%H:%M"))
+                    W("update", "receipts", int(rid), vals)
+                    flash(f"Status {r.nomor} diperbarui: {ns}")
+                    st.rerun()
+            with st.expander("Hapus tanda terima", icon=":material/delete:"):
+                st.warning("Tindakan ini permanen dan tidak dapat dibatalkan.")
+                if st.checkbox("Saya yakin ingin menghapus", key=f"yk_{rid}") and st.button("Hapus permanen", key=f"hp_{rid}"):
+                    W("delete", "receipts", int(rid))
+                    flash(f"{r.nomor} dihapus", "🗑️")
+                    st.rerun()
+        with t2:
+            show_receipt(int(rid), f"h{rid}")
+
 
 def page_master():
-    st.header("Klien & Pengantar")
-    st.subheader("Klien")
-    st.caption("Kolom *kontak*: satu nama (U.p.) per baris. Hapus baris dengan memilihnya lalu tekan Delete.")
-    
-    clients_df = D("clients")
-    # Pastikan semua kolom terdefinisi
-    for c in COLS["clients"]:
-        if c not in clients_df.columns:
-            clients_df[c] = ""
-
-    if "nama" in clients_df.columns and not clients_df.empty:
-        clients_df = clients_df.sort_values("nama")
-
-    ed = st.data_editor(
-        clients_df,
-        num_rows="dynamic",
-        width="stretch",
-        hide_index=True,
-        key="ce",
-        disabled=["id"],
-        column_config={"kontak": st.column_config.TextColumn(width="large")}
-    )
-    
-    if st.button("Simpan klien"):
-        sync("clients", ed, ["nama", "kode", "alamat1", "alamat2", "alamat3", "alamat4", "kontak"],
-             "client_id", "Klien")
-        st.success("Data klien berhasil disimpan!")
-        st.rerun()
-
-    st.subheader("Pengantar")
-    kdf = D("couriers")
-    for c in COLS["couriers"]:
-        if c not in kdf.columns:
-            kdf[c] = ""
-
-    if "nama" in kdf.columns and not kdf.empty:
-        kdf = kdf.sort_values("nama")
-    
-    if "aktif" in kdf.columns:
+    page_header("Klien & Pengantar", "Kelola penerima dan petugas pengantar. Perubahan tersimpan setelah menekan tombol Simpan.")
+    t1, t2 = st.tabs([":material/apartment: Klien", ":material/badge: Pengantar"])
+    with t1:
+        st.caption("Kolom **Kontak**: satu nama (U.p.) per baris. Untuk menghapus, pilih baris lalu tekan Delete.")
+        cdf = D("clients")
+        cdf = (cdf.sort_values("nama") if not cdf.empty else cdf).reset_index(drop=True)
+        cols = [c for c in COLS["clients"] if c != "id"]
+        ed = st.data_editor(cdf, num_rows="dynamic", width="stretch", hide_index=True, key="ce", disabled=["id"],
+                            column_order=cols,
+                            column_config={"nama": st.column_config.TextColumn("Nama klien", width="medium", required=True),
+                                           "alamat1": st.column_config.TextColumn("Alamat 1"),
+                                           "alamat2": st.column_config.TextColumn("Alamat 2"),
+                                           "alamat3": st.column_config.TextColumn("Alamat 3"),
+                                           "alamat4": st.column_config.TextColumn("Alamat 4"),
+                                           "kode_pos": st.column_config.TextColumn("Kode pos", width=90),
+                                           "kontak": st.column_config.TextColumn("Kontak (U.p.)", width="large")})
+        if st.button("Simpan klien", type="primary", icon=":material/save:"):
+            sync("clients", ed, cols, "client_id", "Klien")
+            flash("Data klien disimpan")
+            st.rerun()
+    with t2:
+        kdf = D("couriers")
+        kdf = (kdf.sort_values("nama") if not kdf.empty else kdf).reset_index(drop=True)
         kdf["aktif"] = kdf["aktif"].astype(bool)
-
-    ek = st.data_editor(
-        kdf,
-        num_rows="dynamic",
-        width="stretch",
-        hide_index=True,
-        key="ke",
-        disabled=["id"],
-        column_config={"aktif": st.column_config.CheckboxColumn()}
-    )
-    
-    if st.button("Simpan pengantar"):
-        sync("couriers", ek.fillna({"aktif": True}), ["nama", "aktif"], "courier_id", "Pengantar")
-        st.success("Data pengantar berhasil disimpan!")
-        st.rerun()
+        ek = st.data_editor(kdf, num_rows="dynamic", width="stretch", hide_index=True, key="ke", disabled=["id"],
+                            column_order=["nama", "aktif"],
+                            column_config={"nama": st.column_config.TextColumn("Nama pengantar", required=True),
+                                           "aktif": st.column_config.CheckboxColumn("Aktif", default=True)})
+        if st.button("Simpan pengantar", type="primary", icon=":material/save:"):
+            sync("couriers", ek.fillna({"aktif": True}), ["nama", "aktif"], "courier_id", "Pengantar")
+            flash("Data pengantar disimpan")
+            st.rerun()
 
 
 def page_setelan():
-    st.header("Pengaturan")
-    if isinstance(store, SheetsStore):
-        st.success("Penyimpanan: **Google Sheets** (data tetap).")
-        st.link_button("Buka Google Sheet", store.sh.url)
-    else:
-        st.warning("Penyimpanan: **SQLite sementara** — data hilang saat aplikasi restart di Streamlit Cloud. "
-                   "Isi `gsheet_id` dan `[gcp_service_account]` di Secrets untuk memakai Google Sheets.")
-    st.subheader("Kop surat")
-    kop = get_kop()
-    nama = st.text_input("Nama KJPP", kop["nama"])
-    kiri = st.text_area("Blok kiri (di bawah nama)", kop["kiri"], height=110)
-    kanan = st.text_area("Blok kanan (alamat cabang)", kop["kanan"], height=130)
-    if st.button("Simpan kop"):
-        have = set(D("settings", True).k)
-        for k, v in dict(nama=nama, kiri=kiri, kanan=kanan).items():
-            W("update", "settings", k, {"v": v}) if k in have else W("insert", "settings", {"k": k, "v": v})
-        st.success("Tersimpan.")
-    st.subheader("Cadangan data")
-    data = {t: D(t, True).to_dict("records") for t in COLS}
-    st.download_button("⬇️ Unduh cadangan (JSON)", json.dumps(data, ensure_ascii=False, default=str, indent=1),
-                       f"cadangan-tanda-terima-{datetime.now(WIB):%Y%m%d}.json", "application/json")
-    up = st.file_uploader("Pulihkan dari cadangan (menimpa semua data)", type="json")
-    if up and st.button("Pulihkan sekarang"):
-        d = json.load(up)
-        for t in COLS:
-            W("replace", t, d.get(t, []))
-        st.success("Data dipulihkan.")
-    st.subheader("Data contoh")
-    if st.button("Isi data contoh (fiktif)"):
-        W("insert", "clients", dict(nama="PT CONTOH ABADI Tbk", kode="CABD", alamat1="Menara Contoh Lt. 10",
-                                    alamat2="Jl. Jenderal Sudirman Kav. 1", alamat3="Jakarta 10220", alamat4="",
-                                    kontak="Bpk. Budi\nIbu Sari"))
-        for n in ("Pengantar A", "Pengantar B"):
-            W("insert", "couriers", {"nama": n, "aktif": 1})
-        st.success("Data contoh ditambahkan.")
+    page_header("Pengaturan", "Kop surat, penyimpanan data, dan cadangan.")
+    t1, t2, t3 = st.tabs([":material/badge: Kop surat", ":material/cloud_sync: Penyimpanan & cadangan",
+                          ":material/science: Data contoh"])
+    with t1:
+        kop = get_kop()
+        nama = st.text_input("Nama KJPP", kop["nama"])
+        a, b = st.columns(2)
+        kiri = a.text_area("Blok kiri (di bawah nama)", kop["kiri"], height=200)
+        kanan = b.text_area("Blok kanan (alamat cabang)", kop["kanan"], height=200)
+        if st.button("Simpan kop", type="primary", icon=":material/save:"):
+            have = set(D("settings", True).k)
+            for k, v in dict(nama=nama, kiri=kiri, kanan=kanan).items():
+                W("update", "settings", k, {"v": v}) if k in have else W("insert", "settings", {"k": k, "v": v})
+            flash("Kop surat disimpan")
+            st.rerun()
+    with t2:
+        if isinstance(store, SheetsStore):
+            st.success("Penyimpanan: **Google Sheets** — data tersimpan permanen.", icon=":material/cloud_done:")
+            st.link_button("Buka Google Sheet", store.sh.url, icon=":material/open_in_new:")
+        else:
+            st.warning("Penyimpanan: **SQLite sementara** — data hilang saat aplikasi restart di Streamlit Cloud. "
+                       "Isi `gsheet_id` dan `[gcp_service_account]` di Secrets untuk memakai Google Sheets.",
+                       icon=":material/warning:")
+        if pw:
+            st.button("Keluar dari aplikasi", icon=":material/logout:", on_click=lambda: st.session_state.pop("ok", None))
+        st.markdown("##### Cadangan data")
+        data = {t: D(t, True).to_dict("records") for t in COLS}
+        st.download_button("Unduh cadangan (JSON)", json.dumps(data, ensure_ascii=False, default=str, indent=1),
+                           f"cadangan-tanda-terima-{datetime.now(WIB):%Y%m%d}.json", "application/json",
+                           icon=":material/download:")
+        up = st.file_uploader("Pulihkan dari cadangan (menimpa semua data)", type="json")
+        if up and st.button("Pulihkan sekarang", icon=":material/restore:"):
+            d = json.load(up)
+            for t in COLS:
+                W("replace", t, d.get(t, []))
+            flash("Data dipulihkan")
+            st.rerun()
+    with t3:
+        st.caption("Menambahkan satu klien dan dua pengantar fiktif untuk mencoba aplikasi.")
+        if st.button("Isi data contoh (fiktif)", icon=":material/add:"):
+            W("insert", "clients", dict(nama="PT CONTOH ABADI Tbk", alamat1="Menara Contoh Lt. 10",
+                                        alamat2="Jl. Jenderal Sudirman Kav. 1", alamat3="Jakarta", alamat4="",
+                                        kode_pos="10220", kontak="Bpk. Budi\nIbu Sari"))
+            for nm_ in ("Pengantar A", "Pengantar B"):
+                W("insert", "couriers", {"nama": nm_, "aktif": 1})
+            flash("Data contoh ditambahkan")
+            st.rerun()
 
 
 # ---------- Main ----------
 pw = secret("app_password")
 if pw and not st.session_state.get("ok"):
-    st.title("🧾 Tanda Terima")
-    if st.text_input("Kata sandi", type="password") == pw:
-        st.session_state["ok"] = True
-        st.rerun()
+    login_page(pw)
     st.stop()
 
-PAGES = {"🧾 Buat": page_buat, "📋 Riwayat": page_riwayat,
-         "👥 Klien & Pengantar": page_master, "⚙️ Pengaturan": page_setelan}
-st.sidebar.title("Tanda Terima")
-PAGES[st.sidebar.radio("Menu", list(PAGES), label_visibility="collapsed")]()
+P_BUAT = st.Page(page_buat, title="Buat tanda terima", icon=":material/add_circle:", url_path="buat", default=True)
+P_RIWAYAT = st.Page(page_riwayat, title="Riwayat", icon=":material/history:", url_path="riwayat")
+P_MASTER = st.Page(page_master, title="Klien & Pengantar", icon=":material/groups:", url_path="master")
+P_SETELAN = st.Page(page_setelan, title="Pengaturan", icon=":material/settings:", url_path="pengaturan")
+st.logo(brand_image(), size="large")
+pg = st.navigation([P_BUAT, P_RIWAYAT, P_MASTER, P_SETELAN], position="top")
+show_flash()
+pg.run()
