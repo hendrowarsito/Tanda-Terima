@@ -282,29 +282,68 @@ class SheetsStore:
 
 @st.cache_resource
 def get_store():
+    if str(secret("storage", "")).lower() in ("manual", "lokal", "local", "sqlite"):
+        return SqliteStore("tandaterima.db")  # mode manual dipaksa lewat Secrets
     sid, info = secret("gsheet_id"), secret("gcp_service_account")
     return SheetsStore(sid, info) if sid and info else SqliteStore("tandaterima.db")
 
 
+@st.cache_resource
+def local_store():
+    return SqliteStore("tandaterima.db")
+
+
+SHEETS_ERR = None
 try:
     store = get_store()
-except Exception as _e:  # tampilkan diagnosis (pesan asli Streamlit disembunyikan)
-    st.error("Tidak bisa terhubung ke Google Sheets. " + sheets_hint(_e))
+except Exception as _e:  # Google Sheets gagal -> tetap jalan dalam mode manual (penyimpanan lokal)
     try:
         _email = sa_info(secret("gcp_service_account") or {}).get("client_email")
     except Exception:
         _email = "(tidak terbaca)"
-    st.code(f"gsheet_id = {sheet_id(secret('gsheet_id'))}\n"
-            f"service account = {_email}\n"
-            f"{type(_e).__name__}: {_e}")
-    st.markdown(
-        "**Cek berikut:**\n"
-        "1. Bagikan (*Share*) Google Sheet ke email *service account* di atas dengan peran **Editor**.\n"
-        "2. Di Google Cloud, aktifkan **Google Sheets API** dan **Google Drive API** untuk project-nya.\n"
-        "3. `gsheet_id` = bagian URL antara `/d/` dan `/edit`.\n"
-        "4. `private_key` di Secrets harus utuh, diapit tanda kutip, dengan `\\n` tetap seperti di file JSON.\n"
-        "5. Mau mencoba dulu tanpa Sheets? Hapus `gsheet_id` dan `[gcp_service_account]` di Secrets (SQLite sementara).")
-    st.stop()
+    SHEETS_ERR = {"hint": sheets_hint(_e),
+                  "detail": f"gsheet_id = {sheet_id(secret('gsheet_id'))}\n"
+                            f"service account = {_email}\n{type(_e).__name__}: {_e}"}
+    store = local_store()
+
+
+def sheets_error_box():
+    if not SHEETS_ERR:
+        return
+    st.warning("**Mode manual** — Google Sheets tidak tersambung, data disimpan sementara di server aplikasi. "
+               "Unduh cadangan Excel di *Pengaturan* secara berkala. " + SHEETS_ERR["hint"],
+               icon=":material/cloud_off:")
+    with st.expander("Detail error & cara memperbaiki"):
+        st.code(SHEETS_ERR["detail"])
+        st.markdown(
+            "1. Bagikan (*Share*) Google Sheet ke email *service account* di atas dengan peran **Editor**.\n"
+            "2. Di Google Cloud, aktifkan **Google Sheets API** dan **Google Drive API** untuk project-nya.\n"
+            "3. `gsheet_id` = bagian URL antara `/d/` dan `/edit`.\n"
+            "4. Salin semua field `[gcp_service_account]` dari **satu** file JSON yang sama.\n"
+            "5. Setelah Secrets diperbaiki, klik **Reboot app**.")
+
+
+def to_excel():
+    """Semua tabel -> satu file .xlsx, satu tab per tabel (sama dengan tab di Google Sheet)."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        for t in COLS:
+            D(t, True).to_excel(xw, sheet_name=t, index=False)
+    return buf.getvalue()
+
+
+def from_excel(f):
+    """Baca .xlsx (unduhan aplikasi atau Google Sheet: File > Download > .xlsx) -> {tabel: [baris]}."""
+    xs = pd.read_excel(f, sheet_name=None, dtype=str)
+    miss = [t for t in COLS if t not in xs]
+    if miss:
+        raise ValueError("Tab tidak ditemukan di file: " + ", ".join(miss))
+    out = {}
+    for t in COLS:
+        d = cast(xs[t].fillna(""), t)
+        d = d[d[COLS[t][0]].astype(str).str.strip().ne("") & d[COLS[t][0]].astype(str).ne("0")]
+        out[t] = d.to_dict("records")
+    return out
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -1331,10 +1370,12 @@ def page_setelan():
         if isinstance(store, SheetsStore):
             st.success("Penyimpanan: **Google Sheets** — data tersimpan permanen.", icon=":material/cloud_done:")
             st.link_button("Buka Google Sheet", store.sh.url, icon=":material/open_in_new:")
+        elif SHEETS_ERR:
+            sheets_error_box()
         else:
-            st.warning("Penyimpanan: **SQLite sementara** — data hilang saat aplikasi restart di Streamlit Cloud. "
-                       "Isi `gsheet_id` dan `[gcp_service_account]` di Secrets untuk memakai Google Sheets.",
-                       icon=":material/warning:")
+            st.warning("Penyimpanan: **mode manual (lokal)** — data hilang saat aplikasi restart di Streamlit Cloud. "
+                       "Gunakan cadangan Excel di bawah, atau isi `gsheet_id` dan `[gcp_service_account]` di Secrets "
+                       "untuk memakai Google Sheets.", icon=":material/warning:")
         if pw:
             st.button("Keluar dari aplikasi", icon=":material/logout:", on_click=lambda: st.session_state.pop("ok", None))
         st.markdown("##### Cadangan data")
@@ -1342,13 +1383,24 @@ def page_setelan():
         st.download_button("Unduh cadangan (JSON)", json.dumps(data, ensure_ascii=False, default=str, indent=1),
                            f"cadangan-tanda-terima-{datetime.now(WIB):%Y%m%d}.json", "application/json",
                            icon=":material/download:")
-        up = st.file_uploader("Pulihkan dari cadangan (menimpa semua data)", type="json")
+        st.download_button("Unduh cadangan (Excel)", to_excel(),
+                           f"tanda-terima-{datetime.now(WIB):%Y%m%d}.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           icon=":material/table_view:")
+        st.caption("File Excel berisi tab `clients`, `couriers`, `receipts`, `settings` — bisa dibuka di Excel atau "
+                   "diimpor ke Google Sheets (*File → Import → Replace spreadsheet*). Sebaliknya, Google Sheet bisa "
+                   "diunduh sebagai .xlsx (*File → Download*) lalu dipulihkan di sini.")
+        up = st.file_uploader("Pulihkan dari cadangan (menimpa semua data)", type=["json", "xlsx"])
         if up and st.button("Pulihkan sekarang", icon=":material/restore:"):
-            d = json.load(up)
-            for t in COLS:
-                W("replace", t, d.get(t, []))
-            flash("Data dipulihkan")
-            st.rerun()
+            try:
+                d = from_excel(up) if up.name.lower().endswith(".xlsx") else json.load(up)
+            except Exception as e:
+                st.error(f"File tidak bisa dibaca: {e}")
+            else:
+                for t in COLS:
+                    W("replace", t, d.get(t, []))
+                flash("Data dipulihkan")
+                st.rerun()
     with t3:
         st.caption("Menambahkan satu klien dan dua pengantar fiktif untuk mencoba aplikasi.")
         if st.button("Isi data contoh (fiktif)", icon=":material/add:"):
@@ -1374,4 +1426,6 @@ P_SETELAN = st.Page(page_setelan, title="Pengaturan", icon=":material/settings:"
 st.logo(brand_image(), size="large")
 pg = st.navigation([P_BUAT, P_RIWAYAT, P_MASTER, P_SETELAN], position="top")
 show_flash()
+if SHEETS_ERR and pg.url_path != "pengaturan":
+    sheets_error_box()
 pg.run()

@@ -48,6 +48,15 @@ Pada `private_key`, biarkan `\n` apa adanya (jangan diganti baris baru) dan teta
 Saat pertama dibuka, aplikasi membuat empat tab sendiri di Sheet: `clients`, `couriers`, `receipts`, `settings`.
 Jangan ubah nama tab atau urutan/judul kolom. Mengedit isi sel manual boleh, tapi kolom `id` jangan diubah.
 
+## Mode manual (tanpa Google Sheets)
+Aplikasi **tetap bisa dipakai** walau Google Sheets gagal tersambung: muncul banner kuning *Mode manual* beserta
+penyebab error, dan data disimpan sementara di server aplikasi (SQLite).
+- Data lokal ini **hilang saat aplikasi restart/deploy ulang** di Streamlit Cloud, jadi unduh **cadangan Excel**
+  (*Pengaturan → Penyimpanan & cadangan*) secara berkala.
+- File Excel berisi tab `clients`, `couriers`, `receipts`, `settings`. Bisa diimpor ke Google Sheets
+  (*File → Import → Replace spreadsheet*), dan Google Sheet yang diunduh sebagai .xlsx bisa dipulihkan lagi ke aplikasi.
+- Mau memakai mode manual dengan sengaja (abaikan Google Sheets)? Tambahkan `storage = "manual"` di Secrets.
+
 ## Pratinjau & cetak (kertas A4)
 - Satu lembar **A4**: **setengah atas = tanda terima**, **setengah bawah = amplop** berbingkai (garis putus-putus = tempat memotong).
   Pratinjau di aplikasi menampilkan lembar A4 utuh, persis seperti yang tercetak.

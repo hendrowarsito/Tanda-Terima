@@ -3,3 +3,4 @@ pandas
 reportlab
 gspread>=6.1
 pymupdf
+openpyxl
