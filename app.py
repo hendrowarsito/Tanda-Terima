@@ -183,13 +183,57 @@ class SqliteStore:
             self.insert(t, r)
 
 
+def sheet_id(v):
+    """Terima ID murni maupun URL lengkap Google Sheet; buang spasi/kutip berlebih."""
+    v = str(v or "").strip().strip('"').strip("'")
+    if "/d/" in v:
+        v = v.split("/d/", 1)[1]
+    return v.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+
+
+def sa_info(info):
+    """Rapikan kredensial service account dari Secrets (tabel TOML atau string JSON)."""
+    if isinstance(info, str):
+        info = json.loads(info, strict=False)
+    d = {k: (v.strip() if isinstance(v, str) else v) for k, v in dict(info).items()}
+    pk = d.get("private_key", "")
+    if pk:
+        # \\n tertulis harfiah (mis. di dalam tanda kutip tunggal / triple quote) -> baris baru sungguhan
+        pk = pk.replace("\\r", "").replace("\\n", "\n").replace("\r", "")
+        if not pk.endswith("\n"):
+            pk += "\n"
+        d["private_key"] = pk
+    d.setdefault("token_uri", "https://oauth2.googleapis.com/token")
+    d.setdefault("type", "service_account")
+    return d
+
+
+def sheets_hint(e):
+    """Terjemahkan error koneksi menjadi saran yang spesifik."""
+    n, m = type(e).__name__, str(e)
+    if n == "SpreadsheetNotFound" or "404" in m or "not found" in m.lower():
+        return ("Sheet tidak ditemukan / tidak dibagikan. Pastikan `gsheet_id` benar dan Sheet sudah di-*Share* "
+                "ke email service account dengan peran **Editor**.")
+    if "has not been used" in m or "is disabled" in m or "SERVICE_DISABLED" in m:
+        return "Google Sheets API / Google Drive API belum diaktifkan di project Google Cloud service account ini."
+    if "PERMISSION_DENIED" in m or "403" in m:
+        return "Akses ditolak: Sheet belum dibagikan ke email service account sebagai **Editor**."
+    if "invalid_grant" in m or "Invalid JWT" in m:
+        return ("Kunci service account ditolak (key dihapus/kedaluwarsa atau jam server tidak cocok). "
+                "Buat key JSON baru dan salin ulang ke Secrets.")
+    if n in ("ValueError", "MalformedError", "JSONDecodeError", "KeyError", "TypeError") or "PEM" in m or "key" in m.lower():
+        return ("Format `[gcp_service_account]` di Secrets salah. Salin semua field dari file JSON; "
+                "`private_key` harus utuh dari `-----BEGIN PRIVATE KEY-----` sampai `-----END PRIVATE KEY-----`.")
+    return "Periksa daftar di bawah."
+
+
 class SheetsStore:
     """Tiap tabel = satu worksheet; baris 1 = judul kolom. Kolom pertama = kunci (id / k)."""
 
     def __init__(self, sid, info):
         import gspread
         self.gs = gspread
-        self.sh = gspread.service_account_from_dict(dict(info)).open_by_key(sid)
+        self.sh = gspread.service_account_from_dict(sa_info(info)).open_by_key(sheet_id(sid))
         have = {w.title: w for w in self.sh.worksheets()}
         self.ws = {}
         for t, cols in COLS.items():
@@ -239,9 +283,13 @@ def get_store():
 try:
     store = get_store()
 except Exception as _e:  # tampilkan diagnosis (pesan asli Streamlit disembunyikan)
-    st.error("Tidak bisa terhubung ke Google Sheets.")
-    st.code(f"gsheet_id = {secret('gsheet_id')}\n"
-            f"service account = {(secret('gcp_service_account') or {}).get('client_email')}\n"
+    st.error("Tidak bisa terhubung ke Google Sheets. " + sheets_hint(_e))
+    try:
+        _email = sa_info(secret("gcp_service_account") or {}).get("client_email")
+    except Exception:
+        _email = "(tidak terbaca)"
+    st.code(f"gsheet_id = {sheet_id(secret('gsheet_id'))}\n"
+            f"service account = {_email}\n"
             f"{type(_e).__name__}: {_e}")
     st.markdown(
         "**Cek berikut:**\n"
