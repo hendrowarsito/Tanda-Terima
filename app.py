@@ -211,6 +211,12 @@ def sa_info(info):
 def sheets_hint(e):
     """Terjemahkan error koneksi menjadi saran yang spesifik."""
     n, m = type(e).__name__, str(e)
+    if "account not found" in m:
+        return ("Service account tidak dikenal Google: akunnya sudah dihapus, atau `client_email` / `private_key` "
+                "di Secrets bukan dari file JSON yang sama. Buat key JSON baru dan salin SEMUA field-nya ke Secrets.")
+    if "invalid_grant" in m or "Invalid JWT" in m:
+        return ("Kunci service account ditolak (key dihapus/kedaluwarsa atau jam server tidak cocok). "
+                "Buat key JSON baru dan salin ulang ke Secrets.")
     if n == "SpreadsheetNotFound" or "404" in m or "not found" in m.lower():
         return ("Sheet tidak ditemukan / tidak dibagikan. Pastikan `gsheet_id` benar dan Sheet sudah di-*Share* "
                 "ke email service account dengan peran **Editor**.")
