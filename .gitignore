@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 tandaterima.db
 .streamlit/secrets.toml
+# kunci service account Google (file .json) jangan pernah di-commit
+*.json
