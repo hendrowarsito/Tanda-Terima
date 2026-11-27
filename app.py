@@ -211,6 +211,14 @@ def sa_info(info):
 def sheets_hint(e):
     """Terjemahkan error koneksi menjadi saran yang spesifik."""
     n, m = type(e).__name__, str(e)
+    if e.__cause__ is not None:  # gspread membungkus APIError 403 menjadi PermissionError kosong
+        m = f"{m} {e.__cause__}"
+    if n == "PermissionError" and ("has not been used" in m or "is disabled" in m or "SERVICE_DISABLED" in m):
+        return ("Google Sheets API belum diaktifkan di project service account ini "
+                "(APIs & Services → Library → Google Sheets API → Enable), tunggu 2–5 menit lalu Reboot app.")
+    if n == "PermissionError":
+        return ("Akses ke Sheet ditolak (403). Pastikan Sheet di-*Share* ke email service account di bawah dengan "
+                "peran **Editor**, dan Google Sheets API sudah aktif di project-nya.")
     if "account not found" in m:
         return ("Service account tidak dikenal Google: akunnya sudah dihapus, atau `client_email` / `private_key` "
                 "di Secrets bukan dari file JSON yang sama. Buat key JSON baru dan salin SEMUA field-nya ke Secrets.")
@@ -303,7 +311,8 @@ except Exception as _e:  # Google Sheets gagal -> tetap jalan dalam mode manual 
         _email = "(tidak terbaca)"
     SHEETS_ERR = {"hint": sheets_hint(_e),
                   "detail": f"gsheet_id = {sheet_id(secret('gsheet_id'))}\n"
-                            f"service account = {_email}\n{type(_e).__name__}: {_e}"}
+                            f"service account = {_email}\n{type(_e).__name__}: {_e}"
+                            + (f"\nPenyebab: {_e.__cause__}" if _e.__cause__ is not None else "")}
     store = local_store()
 
 
